@@ -1,0 +1,52 @@
+Windows Registry Editor Version 5.00
+
+; RoboCopy Standalone Script
+; Location: D:\Users\joty79\scripts\Robocopy
+; Uses PowerShell 7 (pwsh.exe) via Windows Terminal
+; COPY/CUT are SILENT, PASTE runs as ADMIN
+
+; -------- CLEANUP OLD KEYS --------
+
+[-HKEY_CLASSES_ROOT\Directory\Background\shell\mvpaste]
+[-HKEY_CLASSES_ROOT\Directory\shell\mvdir]
+[-HKEY_CLASSES_ROOT\Directory\shell\rcopy]
+[-HKEY_CLASSES_ROOT\Directory\Background\shell\rpaste]
+[-HKEY_CLASSES_ROOT\Directory\shell\rpaste]
+
+; -------- RE-ADD MINIMAL SET --------
+
+; 1. Robo-Copy (SILENT via VBS + pwsh)
+[HKEY_CLASSES_ROOT\Directory\shell\rcopy]
+@="Robo-Copy"
+"NoWorkingDirectory"=""
+"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Copy.ico"
+
+[HKEY_CLASSES_ROOT\Directory\shell\rcopy\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" \"%V\""
+
+; 2. Robo-Cut (SILENT via VBS + pwsh)
+[HKEY_CLASSES_ROOT\Directory\shell\mvdir]
+@="Robo-Cut"
+"NoWorkingDirectory"=""
+"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Cut.ico"
+
+[HKEY_CLASSES_ROOT\Directory\shell\mvdir\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv \"%V\""
+
+; 3. Robo-Paste - Background (ADMIN via VBS + Windows Terminal)
+[HKEY_CLASSES_ROOT\Directory\Background\shell\rpaste]
+@="Robo-Paste"
+"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Paste.ico"
+"HasLUAShield"=""
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\rpaste\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboPaste_Admin.vbs\" \"%V\""
+
+; 4. Robo-Paste - Directly on Folder (ADMIN via VBS + Windows Terminal)
+[HKEY_CLASSES_ROOT\Directory\shell\rpaste]
+@="Robo-Paste"
+"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Paste.ico"
+"HasLUAShield"=""
+
+[HKEY_CLASSES_ROOT\Directory\shell\rpaste\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboPaste_Admin.vbs\" \"%V\""
