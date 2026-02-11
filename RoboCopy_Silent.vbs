@@ -1,24 +1,28 @@
 ' Silent wrapper for rcopySingle.ps1 (Robo-Copy / Robo-Cut)
 ' Location: D:\Users\joty79\scripts\Robocopy
-' This runs the PowerShell 7 script without showing any window
+' Runs hidden, no profile, no wait.
 
+Option Explicit
+
+Dim objShell
 Set objShell = CreateObject("WScript.Shell")
 
-' Get the folder path from arguments
 If WScript.Arguments.Count > 0 Then
-    folderPath = WScript.Arguments(0)
-    
-    ' Check if this is a Move operation (first arg is "mv")
-    If folderPath = "mv" Then
-        If WScript.Arguments.Count > 1 Then
-            actualPath = WScript.Arguments(1)
-            command = "pwsh.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\Robocopy\rcopySingle.ps1"" mv """ & actualPath & """"
+    Dim mode, anchorPath, command
+    mode = "rc"
+
+    If LCase(WScript.Arguments(0)) = "mv" Then
+        mode = "mv"
+        If WScript.Arguments.Count < 2 Then
+            WScript.Quit 0
         End If
+        anchorPath = WScript.Arguments(1)
     Else
-        ' Copy operation
-        command = "pwsh.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\Robocopy\rcopySingle.ps1"" """ & folderPath & """"
+        anchorPath = WScript.Arguments(0)
     End If
-    
-    ' Run silently (0 = hidden, False = don't wait)
+
+    command = "pwsh.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " & _
+              """D:\Users\joty79\scripts\Robocopy\rcopySingle.ps1"" " & mode & " """ & anchorPath & """"
+
     objShell.Run command, 0, False
 End If

@@ -9,8 +9,8 @@ If WScript.Arguments.Count > 0 Then
     folderPath = WScript.Arguments(0)
     
     ' Build the argument string for wt
-    ' wt new-tab pwsh -ExecutionPolicy Bypass -File "script.ps1" args
-    args = "new-tab pwsh -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\Robocopy\rcp.ps1"" auto auto """ & folderPath & """"
+    ' wt new-tab pwsh -NoProfile -ExecutionPolicy Bypass -File "script.ps1" args
+    args = "new-tab pwsh -NoProfile -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\Robocopy\rcp.ps1"" auto auto """ & folderPath & """"
     
     ' Run wt.exe as admin (runas)
     ' Parameters: file, arguments, directory, operation, show

@@ -1,4 +1,4 @@
-#if folder name begins with "0", registry doesn't work ..... (\0) == "newline"
+#Robocopy paste engine for staged files/folders from HKCU:\RCWM
 
 #flags used when robocopying (overwrites files):
 
@@ -28,19 +28,74 @@ $process.PriorityClass = 'High'
 
 function NoListAvailable {
 	if ($mode -eq "m") {
-		echo "List of folders to be $string1 does not exist!"
+		echo "List of items to be $string1 does not exist!"
 		Start-Sleep 1
-		echo "Create the list by right-clicking on folders and selecting $string2."
+		echo "Create the list by right-clicking on files/folders and selecting $string2."
 		Start-Sleep 3
-		exit
+		Exit-Script -Code 1 -Reason "NoListAvailable (mode=m): list missing."
 	}
  elseif ($mode -eq "s") {
-		echo "Folder to be $string1 does not exist!"
+		echo "Item to be $string1 does not exist!"
 		Start-Sleep 1
-		echo "Create one by right-clicking on a folder and selecting $string2."
+		echo "Create one by right-clicking on a file/folder and selecting $string2."
 		Start-Sleep 3
-		exit
+		Exit-Script -Code 1 -Reason "NoListAvailable (mode=s): single source missing."
 	}
+}
+
+function Get-UniquePathList {
+	param([string[]]$InputPaths)
+
+	$seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+	$out = New-Object System.Collections.Generic.List[string]
+
+	foreach ($rawPath in @($InputPaths)) {
+		if ([string]::IsNullOrWhiteSpace($rawPath)) { continue }
+
+		$candidate = $rawPath
+		try {
+			$candidate = (Resolve-Path -LiteralPath $rawPath -ErrorAction Stop).ProviderPath
+		}
+		catch { }
+
+		if ($seen.Add($candidate)) {
+			[void]$out.Add($candidate)
+		}
+	}
+
+	return [string[]]$out.ToArray()
+}
+
+function Get-StagedPathList {
+	param([string]$CommandName)
+
+	$regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
+	if (-not (Test-Path -LiteralPath $regPath)) { return @() }
+
+	$item = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
+	if (-not $item) { return @() }
+
+	$ignore = @("PSPath", "PSParentPath", "PSChildName", "PSDrive", "PSProvider")
+	$paths = New-Object System.Collections.Generic.List[string]
+
+	foreach ($prop in $item.PSObject.Properties) {
+		if ($ignore -contains $prop.Name) { continue }
+		if ($prop.Name -eq "(default)") { continue }
+		if ($prop.Name.StartsWith("__")) { continue }
+
+		# New format: item_xxxxxx value contains full path.
+		$candidate = [string]$prop.Value
+		# Backward compatibility: old format used path as value name.
+		if ([string]::IsNullOrWhiteSpace($candidate)) {
+			$candidate = [string]$prop.Name
+		}
+		if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+
+		if (-not (Test-Path -LiteralPath $candidate)) { continue }
+		[void]$paths.Add($candidate)
+	}
+
+	return Get-UniquePathList -InputPaths @($paths)
 }
 
 function Get-DriveLetterFromPath {
@@ -152,6 +207,7 @@ function Get-TuneConfig {
 		benchmark_mode = $false
 		benchmark      = $false
 		hold_window    = $false
+		debug_mode     = $false
 		default_mt     = $null
 		extra_args     = @()
 		routes         = @()
@@ -181,6 +237,9 @@ function Get-TuneConfig {
 
 			if ($null -ne $data.hold_window) {
 				$config.hold_window = [bool]$data.hold_window
+			}
+			if ($null -ne $data.debug_mode) {
+				$config.debug_mode = [bool]$data.debug_mode
 			}
 
 			if ($null -ne $data.default_mt -and "$($data.default_mt)" -match '^\d+$') {
@@ -225,8 +284,12 @@ function Get-RunSettings {
 	param([object]$Config)
 
 	$benchmarkMode = $false
+	$debugMode = $false
 	if ($Config -and $null -ne $Config.benchmark_mode) {
 		$benchmarkMode = [bool]$Config.benchmark_mode
+	}
+	if ($Config -and $null -ne $Config.debug_mode) {
+		$debugMode = [bool]$Config.debug_mode
 	}
 
 	if ($benchmarkMode) {
@@ -234,6 +297,7 @@ function Get-RunSettings {
 			BenchmarkMode   = $true
 			BenchmarkOutput = $true
 			HoldWindow      = $true
+			DebugMode       = $debugMode
 		}
 	}
 
@@ -245,11 +309,15 @@ function Get-RunSettings {
 	if ($Config -and $null -ne $Config.hold_window) {
 		$holdWindow = [bool]$Config.hold_window
 	}
+	if ($Config -and $null -ne $Config.debug_mode) {
+		$debugMode = [bool]$Config.debug_mode
+	}
 
 	return [pscustomobject]@{
 		BenchmarkMode   = $false
 		BenchmarkOutput = $benchmarkOutput
 		HoldWindow      = $holdWindow
+		DebugMode       = $debugMode
 	}
 }
 
@@ -362,10 +430,40 @@ function Get-ThreadDecision {
 }
 
 function Get-DirectoryStats {
-	param([string]$PathValue)
+	param(
+		[string]$PathValue,
+		[switch]$SourceIsFile,
+		[string[]]$FileFilters
+	)
 
 	if (-not (Test-Path -LiteralPath $PathValue)) {
 		return [pscustomobject]@{ Files = 0; Bytes = [int64]0 }
+	}
+
+	if ($SourceIsFile) {
+		$filters = @($FileFilters | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+		if (@($filters).Count -gt 0) {
+			$seenNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+			$fileCount = 0
+			$totalBytes = [int64]0
+
+			foreach ($name in $filters) {
+				if (-not $seenNames.Add($name)) { continue }
+				$filePath = Join-Path $PathValue $name
+				$fileItem = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
+				if (-not $fileItem -or $fileItem.PSIsContainer) { continue }
+				$fileCount++
+				$totalBytes += [int64]$fileItem.Length
+			}
+
+			return [pscustomobject]@{ Files = $fileCount; Bytes = $totalBytes }
+		}
+
+		$item = Get-Item -LiteralPath $PathValue -Force -ErrorAction SilentlyContinue
+		if (-not $item -or $item.PSIsContainer) {
+			return [pscustomobject]@{ Files = 0; Bytes = [int64]0 }
+		}
+		return [pscustomobject]@{ Files = 1; Bytes = [int64]$item.Length }
 	}
 
 	$measure = Get-ChildItem -LiteralPath $PathValue -Recurse -File -Force -ErrorAction SilentlyContinue |
@@ -398,6 +496,17 @@ function Get-RobocopyExitDescription {
 		7 { return "Files copied + extra + mismatches detected" }
 		default { return "Failure (robocopy exit code >= 8)" }
 	}
+}
+
+function Write-RunLog {
+	param([string]$Message)
+
+	if (-not $script:RunLogPath) { return }
+	try {
+		$line = "{0} | {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"), $Message
+		Add-Content -LiteralPath $script:RunLogPath -Value $line -Encoding UTF8
+	}
+	catch { }
 }
 
 function Open-RoboTuneWindow {
@@ -434,18 +543,48 @@ function Wait-ForCloseOrTune {
 	}
 }
 
+function Exit-Script {
+	param(
+		[int]$Code = 0,
+		[string]$Reason = ""
+	)
+
+	if ($Reason) {
+		Write-RunLog ("Exit requested | Code={0} | Reason={1}" -f $Code, $Reason)
+	}
+	$hold = $false
+	if ($script:RunSettings -and $null -ne $script:RunSettings.HoldWindow) {
+		$hold = [bool]$script:RunSettings.HoldWindow
+	}
+	Wait-ForCloseOrTune -Enabled $hold
+	exit $Code
+}
+
 function Invoke-RobocopyTransfer {
 	param(
 		[string]$SourcePath,
 		[string]$DestinationPath,
 		[string]$ModeFlag,
-		[switch]$MergeMode
+		[switch]$MergeMode,
+		[switch]$SourceIsFile,
+		[string[]]$FileFilters
 	)
 
 	$decision = Get-ThreadDecision -SourcePath $SourcePath -DestinationPath $DestinationPath
 	$threadCount = [int]$decision.ThreadCount
 
-	$robocopyArgs = @($SourcePath, $DestinationPath, "/E", "/NP", "/NJH", "/NJS", "/NC", "/NS")
+	$robocopyArgs = @($SourcePath, $DestinationPath)
+	if ($SourceIsFile) {
+		$effectiveFilters = @($FileFilters | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+		if (@($effectiveFilters).Count -eq 0) {
+			throw "Invoke-RobocopyTransfer: FileFilters are required when SourceIsFile is set."
+		}
+		$robocopyArgs += $effectiveFilters
+	}
+	else {
+		$robocopyArgs += "/E"
+	}
+	$robocopyArgs += @("/NP", "/NJH", "/NJS", "/NC", "/NS")
 	if ($ModeFlag) {
 		$robocopyArgs += $ModeFlag
 	}
@@ -462,22 +601,39 @@ function Invoke-RobocopyTransfer {
 		}
 	}
 
+	if ($script:RunSettings.DebugMode) {
+		$hasTee = @($robocopyArgs | Where-Object { $_ -match '^/TEE$' }).Count -gt 0
+		$hasLog = @($robocopyArgs | Where-Object { $_ -match '^/(LOG|LOG\+|UNILOG|UNILOG\+):' }).Count -gt 0
+		$hasVerbose = @($robocopyArgs | Where-Object { $_ -match '^/V$' }).Count -gt 0
+		$hasTs = @($robocopyArgs | Where-Object { $_ -match '^/TS$' }).Count -gt 0
+		$hasFp = @($robocopyArgs | Where-Object { $_ -match '^/FP$' }).Count -gt 0
+		$hasBytes = @($robocopyArgs | Where-Object { $_ -match '^/BYTES$' }).Count -gt 0
+
+		if (-not $hasTee) { $robocopyArgs += "/TEE" }
+		if (-not $hasLog) { $robocopyArgs += "/LOG+:$script:RobocopyDebugLogPath" }
+		if (-not $hasVerbose) { $robocopyArgs += "/V" }
+		if (-not $hasTs) { $robocopyArgs += "/TS" }
+		if (-not $hasFp) { $robocopyArgs += "/FP" }
+		if (-not $hasBytes) { $robocopyArgs += "/BYTES" }
+	}
+
 	$robocopyArgs += "/MT:$threadCount"
 
 	$benchmarkEnabled = [bool]$script:RunSettings.BenchmarkOutput
 
 	$sourceStats = [pscustomobject]@{ Files = 0; Bytes = [int64]0 }
 	if ($benchmarkEnabled) {
-		$sourceStats = Get-DirectoryStats -PathValue $SourcePath
+		$sourceStats = Get-DirectoryStats -PathValue $SourcePath -SourceIsFile:$SourceIsFile -FileFilters $FileFilters
 	}
 
 	$sourceDiskText = if ($null -eq $decision.SourceDisk) { "?" } else { "$($decision.SourceDisk)" }
 	$destDiskText = if ($null -eq $decision.DestDisk) { "?" } else { "$($decision.DestDisk)" }
 	Write-Host "Using /MT:$threadCount [$($decision.Reason)]" -ForegroundColor DarkGray
 	Write-Host "Media: $($decision.SourceMedia) (Disk $sourceDiskText) -> $($decision.DestMedia) (Disk $destDiskText)" -ForegroundColor DarkGray
+	Write-RunLog ("Transfer start | Source='{0}' | Dest='{1}' | MT={2} | Reason='{3}' | Media={4}->{5}" -f $SourcePath, $DestinationPath, $threadCount, $decision.Reason, $decision.SourceMedia, $decision.DestMedia)
 
 	$timer = [System.Diagnostics.Stopwatch]::StartNew()
-	& C:\Windows\System32\robocopy.exe @robocopyArgs
+	$null = (& C:\Windows\System32\robocopy.exe @robocopyArgs | Out-Host)
 	$exitCode = $LASTEXITCODE
 	$timer.Stop()
 
@@ -491,6 +647,7 @@ function Invoke-RobocopyTransfer {
 	$exitDescription = Get-RobocopyExitDescription -ExitCode $exitCode
 	$statusColor = if ($exitCode -lt 8) { "Green" } else { "Red" }
 	Write-Host ("Result: ExitCode={0} | {1}" -f $exitCode, $exitDescription) -ForegroundColor $statusColor
+	Write-RunLog ("Transfer result | ExitCode={0} | Desc='{1}' | Elapsed={2}s | Files={3} | Bytes={4}" -f $exitCode, $exitDescription, $elapsedSeconds, $sourceStats.Files, $sourceStats.Bytes)
 	if ($benchmarkEnabled) {
 		Write-Host ("Benchmark: Files={0} | Data={1} | Time={2}s | Throughput~{3}" -f $sourceStats.Files, (Format-ByteSize -Bytes $sourceStats.Bytes), $elapsedSeconds, $throughput) -ForegroundColor Cyan
 	}
@@ -508,11 +665,280 @@ function Invoke-RobocopyTransfer {
 	}
 }
 
+function Invoke-StagedTransfer {
+	param(
+		[string]$SourcePath,
+		[string]$PasteIntoDirectory,
+		[string]$ModeFlag,
+		[bool]$IsMove,
+		[switch]$MergeMode
+	)
+
+	$sourceItem = Get-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue
+	if (-not $sourceItem) {
+		Write-Host "Source item '$SourcePath' does not exist." -ForegroundColor Yellow
+		return [pscustomobject]@{
+			ItemName = (Split-Path -Path $SourcePath -Leaf)
+			Result   = $null
+		}
+	}
+
+	$itemName = [string]$sourceItem.Name
+	if ([string]::IsNullOrWhiteSpace($itemName)) {
+		$itemName = Split-Path -Path $SourcePath -Leaf
+	}
+
+	if ($sourceItem.PSIsContainer) {
+		$destination = Join-Path $PasteIntoDirectory $itemName
+		if (-not (Test-Path -LiteralPath $destination)) {
+			New-Item -Path $destination -ItemType Directory -Force | Out-Null
+		}
+
+		$result = Invoke-RobocopyTransfer -SourcePath $SourcePath -DestinationPath $destination -ModeFlag $ModeFlag -MergeMode:$MergeMode
+		if ($IsMove) {
+			if ($result.Succeeded) {
+				cmd.exe /c rd /s /q "$SourcePath"
+			}
+			else {
+				Write-Host "Skip delete for '$SourcePath' due to robocopy errors." -ForegroundColor Red
+			}
+		}
+
+		return [pscustomobject]@{
+			ItemName = $itemName
+			Result   = $result
+		}
+	}
+
+	$sourceDirectory = [string]$sourceItem.DirectoryName
+	if ([string]::IsNullOrWhiteSpace($sourceDirectory)) {
+		$sourceDirectory = Split-Path -Path $SourcePath -Parent
+	}
+	if ([string]::IsNullOrWhiteSpace($sourceDirectory)) {
+		Write-Host "Cannot resolve source directory for file '$SourcePath'." -ForegroundColor Red
+		return [pscustomobject]@{
+			ItemName = $itemName
+			Result   = $null
+		}
+	}
+	$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters @($itemName)
+
+	if ($IsMove) {
+		if ($result.Succeeded) {
+			Remove-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue
+		}
+		else {
+			Write-Host "Skip delete for '$SourcePath' due to robocopy errors." -ForegroundColor Red
+		}
+	}
+
+	return [pscustomobject]@{
+		ItemName = $itemName
+		Result   = $result
+	}
+}
+
+function Split-FileNameBatches {
+	param(
+		[string[]]$FileNames,
+		[int]$MaxChars = 6500
+	)
+
+	$allNames = @($FileNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	if (@($allNames).Count -eq 0) { return @() }
+
+	$batches = New-Object System.Collections.Generic.List[object]
+	$current = New-Object System.Collections.Generic.List[string]
+	$currentChars = 0
+
+	foreach ($name in $allNames) {
+		$estimate = [int]$name.Length + 4
+		if ($current.Count -gt 0 -and ($currentChars + $estimate) -gt $MaxChars) {
+			[void]$batches.Add([string[]]$current.ToArray())
+			$current.Clear()
+			$currentChars = 0
+		}
+
+		[void]$current.Add($name)
+		$currentChars += $estimate
+	}
+
+	if ($current.Count -gt 0) {
+		[void]$batches.Add([string[]]$current.ToArray())
+	}
+
+	return [object[]]$batches.ToArray()
+}
+
+function Invoke-StagedFileBatchTransfer {
+	param(
+		[string[]]$FilePaths,
+		[string]$PasteIntoDirectory,
+		[string]$ModeFlag,
+		[bool]$IsMove,
+		[switch]$MergeMode
+	)
+
+	$paths = @($FilePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	if (@($paths).Count -eq 0) {
+		return [pscustomobject]@{
+			ItemName = ""
+			Results  = @()
+		}
+	}
+
+	$resolvedFilePaths = New-Object System.Collections.Generic.List[string]
+	$fileNames = New-Object System.Collections.Generic.List[string]
+	$seenPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+	$seenNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+	$sourceDirectory = $null
+
+	foreach ($path in $paths) {
+		$item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+		if (-not $item -or $item.PSIsContainer) { continue }
+
+		$itemDirectory = [string]$item.DirectoryName
+		if ([string]::IsNullOrWhiteSpace($itemDirectory)) {
+			$itemDirectory = Split-Path -Path $item.FullName -Parent
+		}
+		if ([string]::IsNullOrWhiteSpace($itemDirectory)) { continue }
+
+		if (-not $sourceDirectory) {
+			$sourceDirectory = $itemDirectory
+		}
+		if (-not [string]::Equals($sourceDirectory, $itemDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+			continue
+		}
+
+		$fullPath = [string]$item.FullName
+		if ($seenPaths.Add($fullPath)) {
+			[void]$resolvedFilePaths.Add($fullPath)
+		}
+
+		$name = [string]$item.Name
+		if ($seenNames.Add($name)) {
+			[void]$fileNames.Add($name)
+		}
+	}
+
+	if (-not $sourceDirectory -or $fileNames.Count -eq 0) {
+		return [pscustomobject]@{
+			ItemName = ""
+			Results  = @()
+		}
+	}
+
+	$results = @()
+	$allSucceeded = $true
+	$batches = @(Split-FileNameBatches -FileNames ([string[]]$fileNames.ToArray()))
+	foreach ($fileBatch in $batches) {
+		$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters ([string[]]$fileBatch)
+		if ($result) {
+			$results += $result
+			if (-not $result.Succeeded) { $allSucceeded = $false }
+		}
+	}
+
+	if ($IsMove) {
+		if ($allSucceeded) {
+			foreach ($sourceFile in [string[]]$resolvedFilePaths.ToArray()) {
+				Remove-Item -LiteralPath $sourceFile -Force -ErrorAction SilentlyContinue
+			}
+		}
+		else {
+			Write-Host "Skip delete for file batch in '$sourceDirectory' due to robocopy errors." -ForegroundColor Red
+		}
+	}
+
+	return [pscustomobject]@{
+		ItemName = ("{0} files from '{1}'" -f $resolvedFilePaths.Count, $sourceDirectory)
+		Results  = @($results)
+	}
+}
+
+function Invoke-StagedPathCollection {
+	param(
+		[string[]]$Paths,
+		[string]$PasteIntoDirectory,
+		[string]$ModeFlag,
+		[bool]$IsMove,
+		[switch]$MergeMode,
+		[string]$ActionLabel
+	)
+
+	$results = @()
+	$fileGroups = @{}
+	$pathList = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+	foreach ($path in $pathList) {
+		if (-not (Test-Path -LiteralPath $path)) {
+			Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
+			continue
+		}
+
+		$item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+		if (-not $item) {
+			Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
+			continue
+		}
+
+		if ($item.PSIsContainer) {
+			$transfer = Invoke-StagedTransfer -SourcePath $path -PasteIntoDirectory $PasteIntoDirectory -ModeFlag $ModeFlag -IsMove:$IsMove -MergeMode:$MergeMode
+			if ($transfer.Result) {
+				$results += $transfer.Result
+			}
+			if ($ActionLabel) {
+				Write-Output ("Finished {0} {1}" -f $ActionLabel, $transfer.ItemName)
+			}
+			continue
+		}
+
+		$sourceDirectory = [string]$item.DirectoryName
+		if ([string]::IsNullOrWhiteSpace($sourceDirectory)) {
+			$sourceDirectory = Split-Path -Path $item.FullName -Parent
+		}
+		if ([string]::IsNullOrWhiteSpace($sourceDirectory)) {
+			Write-Host "Cannot resolve source directory for file '$path'." -ForegroundColor Red
+			continue
+		}
+
+		if (-not $fileGroups.ContainsKey($sourceDirectory)) {
+			$fileGroups[$sourceDirectory] = New-Object System.Collections.Generic.List[string]
+		}
+		[void]$fileGroups[$sourceDirectory].Add($path)
+	}
+
+	foreach ($sourceDirectory in @($fileGroups.Keys | Sort-Object)) {
+		$fileBatch = Invoke-StagedFileBatchTransfer -FilePaths ([string[]]$fileGroups[$sourceDirectory].ToArray()) -PasteIntoDirectory $PasteIntoDirectory -ModeFlag $ModeFlag -IsMove:$IsMove -MergeMode:$MergeMode
+		if ($fileBatch -and $fileBatch.Results) {
+			$results += @($fileBatch.Results)
+		}
+		if ($ActionLabel -and $fileBatch.ItemName) {
+			Write-Output ("Finished {0} {1}" -f $ActionLabel, $fileBatch.ItemName)
+		}
+	}
+
+	return @($results)
+}
+
 # Error log file path
 $errorLogPath = "$PSScriptRoot\error_log.txt"
+$script:RunLogPath = "$PSScriptRoot\run_log.txt"
+$script:RobocopyDebugLogPath = "$PSScriptRoot\robocopy_debug.log"
 $tuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
 $script:RoboTuneConfig = Get-TuneConfig -ConfigPath $tuneConfigPath
 $script:RunSettings = Get-RunSettings -Config $script:RoboTuneConfig
+Write-RunLog "===== START ====="
+Write-RunLog ("Config path: {0}" -f $tuneConfigPath)
+Write-RunLog ("BenchmarkMode={0} | BenchmarkOutput={1} | HoldWindow={2} | DebugMode={3}" -f $script:RunSettings.BenchmarkMode, $script:RunSettings.BenchmarkOutput, $script:RunSettings.HoldWindow, $script:RunSettings.DebugMode)
+if ($script:RunSettings.BenchmarkMode) {
+	Write-Host "Benchmark mode is ON (window will stay open at end)." -ForegroundColor Cyan
+	Write-Host ("Run log: {0}" -f $script:RunLogPath) -ForegroundColor DarkCyan
+}
+if ($script:RunSettings.DebugMode) {
+	Write-Host ("Debug mode is ON. Robocopy debug log: {0}" -f $script:RobocopyDebugLogPath) -ForegroundColor DarkYellow
+	Write-RunLog ("Debug log path: {0}" -f $script:RobocopyDebugLogPath)
+}
 
 try {
 	# Quick probe mode for tuning/tests without copy operations
@@ -523,6 +949,7 @@ try {
 		Write-Host ("Recommended /MT:{0} [{1}] for '{2}' -> '{3}'" -f $probeDecision.ThreadCount, $probeDecision.Reason, $probeSource, $probeDestination)
 		Write-Host ("Detected media: {0} -> {1}" -f $probeDecision.SourceMedia, $probeDecision.DestMedia)
 		Write-Host ("Benchmark mode: {0}" -f $script:RunSettings.BenchmarkMode)
+		Write-RunLog ("Probe | Source='{0}' | Dest='{1}' | MT={2} | Reason='{3}' | Media={4}->{5}" -f $probeSource, $probeDestination, $probeDecision.ThreadCount, $probeDecision.Reason, $probeDecision.SourceMedia, $probeDecision.DestMedia)
 		exit 0
 	}
 
@@ -546,40 +973,12 @@ try {
 
 
 	# copy / move logic setup
-	if ($args[2] -eq $null) {
-		#pwsh 4 and less
-		$regInsert = (Get-itemproperty -Path "HKCU:\RCWM\$command").dir #must not be string, but string array
-		# ... (rest of the block remains same logic but adapted if needed) ...
-		# Simplified logic for standalone: Just read the property we know exists
-
-		# Robust way to get the first property name which is our folder path
-		$regKey = Get-Item -Path "HKCU:\RCWM\$command"
-		$properties = $regKey.Property
-    
-		if ($properties -and $properties.Count -gt 0) {
-			$pasteIntoDirectory = $properties[0]
-		}
-		else {
-			# Fallback if no properties found (should not happen if copy succeeded)
-			$pasteIntoDirectory = $null
-		}
-
+	if ($args.Count -lt 3 -or [string]::IsNullOrWhiteSpace([string]$args[2])) {
+		throw "Paste target path is missing."
 	}
-	else {
-
-		#fix issues with trailing backslash (keep original logic)
-		If (($args[2][-1] -eq "'" ) -and ($args[2][-2] -eq "\" )) {
-			#pwsh v5
-			$pasteIntoDirectory = $args[2].substring(1, 2)
-		}
-		elseif (($args[2][-1] -eq '"' ) -and ($args[2][-2] -eq ':' )) {
-			#pwsh v7
-			$pasteIntoDirectory = $args[2].substring(0, 2)
-		}
-		else {
-			$pasteIntoDirectory = $args[2]
-		}
-
+	$pasteIntoDirectory = [string]$args[2]
+	if (-not (Test-Path -LiteralPath $pasteIntoDirectory)) {
+		throw "Paste target path does not exist: $pasteIntoDirectory"
 	}
 
 	$pasteDirectoryDisplay = "'" + $pasteIntoDirectory + "'"
@@ -600,38 +999,10 @@ try {
 		$string4 = "copy"
 	}
 
-
-
-	#add mirror command
-
-
-	#get array of contents of paths inside HKCU\RCWM\command
-	$array = (Get-Item -Path Registry::HKCU\RCWM\$command).property 2> $null
-
-
-	$arrayLength = ($array | measure).count
-
-	#delete '(default)' in first place
-	try {
-		if ( $array[0] -eq "(default)" ) {
-			if ($arrayLength -eq 1) {
-				$array = $null
-			}
-			else {
-				$array = $array[1..($array.Length - 1)]
-			}
-		}
-		elseif ( $array -eq "(default)" ) {
-			#empty registry and powershell v2
-			NoListAvailable
-		}
-	}
-	catch {
-		NoListAvailable
-	}
-
-	#check if list of folders to be copied exist
-	if ( $arrayLength -eq 0 ) {
+	# Read staged files/folders from registry list.
+	$array = Get-StagedPathList -CommandName $command
+	$arrayLength = @($array).Count
+	if ($arrayLength -eq 0) {
 		NoListAvailable
 	}
 
@@ -639,10 +1010,10 @@ try {
 	if ($mode -eq "m") {
 
 		if ( $arrayLength -eq 1 ) {
-			Write-host "You're about to $string4 the following folder into" $pasteDirectoryDisplay":"
+			Write-host "You're about to $string4 the following item into" $pasteDirectoryDisplay":"
 		}
 		else {
-			Write-host "You're about to $string4 the following" $array.length "folders into" $pasteDirectoryDisplay":"
+			Write-host "You're about to $string4 the following" $array.length "items into" $pasteDirectoryDisplay":"
 		}
 
 		$array
@@ -665,7 +1036,7 @@ try {
 				{ "n", "no" -contains $_ } {
 
 					Do {
-						[string]$prompt = Read-Host -Prompt "Delete list of folders? (Y/N)"
+						[string]$prompt = Read-Host -Prompt "Delete list of items? (Y/N)"
 						Switch ($prompt) {
 					
 							default {
@@ -677,13 +1048,13 @@ try {
 								Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * | Out-Null
 								Write-Host "List deleted."
 								Start-Sleep 2
-								exit
+								Exit-Script -Code 0 -Reason "User deleted source list."
 							}
 
 							{ "n", "no" -contains $_ } {
 								Write-Host "Aborting."
 								Start-Sleep 3
-								exit
+								Exit-Script -Code 0 -Reason "User aborted copy confirmation."
 							}
 
 						}
@@ -704,69 +1075,56 @@ try {
 		write-host ""
 		$sessionTimer = [System.Diagnostics.Stopwatch]::StartNew()
 		$sessionResults = @()
+		$isMove = ($command -eq "mv")
+
+		$merge = New-Object System.Collections.Generic.List[string]
+		$ready = New-Object System.Collections.Generic.List[string]
 
 		foreach ($path in $array) {
-
-			#get folder name
-
-			if ($psversiontable.PSVersion.Major -eq 2) {
-				$folder = ($path -split "\\")[-1]
-			}
-			else {
-				$folder = $path.split("\")[-1]
-			}
-
-
-
-			#concatenation has to be done like this
-			[string]$destination = [string]$pasteIntoDirectory + "\" + [string]$folder
-
-			#does source folder exist?
-			if (-not ( Test-Path -literalpath "$path" )) {
-				echo "Source folder" $path "does not exist."
+			if (-not (Test-Path -LiteralPath $path)) {
+				Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
 				continue
 			}
 
-			#if exist folder (or file)
+			$item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+			if (-not $item) {
+				Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
+				continue
+			}
 
-			If (Test-Path -literalPath "$destination") {
-				#store folders for merge prompt
-				#overwrite - or just copy
-				[string[]]$merge += $path
+			$itemName = [string]$item.Name
+			if ([string]::IsNullOrWhiteSpace($itemName)) {
+				$itemName = Split-Path -Path $path -Leaf
+			}
+
+			$destination = Join-Path $pasteIntoDirectory $itemName
+			if (Test-Path -LiteralPath $destination) {
+				[void]$merge.Add($path)
 			}
 			else {
-				#make new directory with the same name as the folder being copied
+				[void]$ready.Add($path)
+			}
+		}
 
-				New-Item -Path "$destination" -ItemType Directory > $null
-
-				$result = Invoke-RobocopyTransfer -SourcePath $path -DestinationPath $destination -ModeFlag $flag
-				$sessionResults += $result
-			
-				if ($command -eq "mv") { 
-					if ($result.Succeeded) {
-						cmd.exe /c rd /s /q "$path"
-					}
-					else {
-						Write-Host "Skip delete for '$path' due to robocopy errors." -ForegroundColor Red
-					}
-				}
-
-				echo "Finished $string3 $folder"
+		if ($ready.Count -gt 0) {
+			$readyResults = @(Invoke-StagedPathCollection -Paths ([string[]]$ready.ToArray()) -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -ActionLabel $string3)
+			if ($readyResults.Count -gt 0) {
+				$sessionResults += $readyResults
 			}
 		}
 
 		#if merge array exists
-		if ($merge) {
+		if ($merge.Count -gt 0) {
+			$mergedPaths = [string[]]$merge.ToArray()
+			Write-host "Successfully $string1" $($arrayLength - $merge.Count) "out of" $arrayLength "items."
 
-			Write-host "Successfully copied" $($arrayLength - $merge.length) "out of" $arrayLength "folders."
-
-			if ($merge.length -eq 1) {
-				Write-host "The following folder already exists inside" $pasteDirectoryDisplay":"
+			if ($merge.Count -eq 1) {
+				Write-host "The following item already exists inside" $pasteDirectoryDisplay":"
 			}
 			else {
-				Write-host "The following" $merge.length "folders already exist inside" $pasteDirectoryDisplay":"
+				Write-host "The following" $merge.Count "items already exist inside" $pasteDirectoryDisplay":"
 			}
-			$merge
+			$mergedPaths
 
 			Write-Host ""
 			Write-Host "[Enter] = Overwrite | [M] = Merge | [ESC] = Abort" -ForegroundColor Yellow
@@ -779,57 +1137,23 @@ try {
 				Switch ($key) {
 					"Enter" {
 						Write-Output "Overwriting ..."
-
-						for ($i = 0; $i -lt $merge.length; $i++) {
-							$path = $merge[$i]
-							$folder = $path.split("\")[-1]
-							$destination = $pasteIntoDirectory + "\" + $folder
-
-							$result = Invoke-RobocopyTransfer -SourcePath $path -DestinationPath $destination -ModeFlag $flag
-							$sessionResults += $result
-
-							if ($command -eq "mv") { 
-								if ($result.Succeeded) {
-									cmd.exe /c rd /s /q "$path"
-								}
-								else {
-									Write-Host "Skip delete for '$path' due to robocopy errors." -ForegroundColor Red
-								}
-							}
-
-							Write-Output "Finished overwriting $folder"
+						$overwriteResults = @(Invoke-StagedPathCollection -Paths $mergedPaths -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -ActionLabel "overwriting")
+						if ($overwriteResults.Count -gt 0) {
+							$sessionResults += $overwriteResults
 						}
-
 					}
 					"M" {
 						Write-Host "Merging ..."
-
-						for ($i = 0; $i -lt $merge.length; $i++) {
-							$path = $merge[$i]
-							$folder = $path.split("\")[-1]
-							$destination = $pasteIntoDirectory + "\" + $folder
-
-							$result = Invoke-RobocopyTransfer -SourcePath $path -DestinationPath $destination -ModeFlag $flag -MergeMode
-							$sessionResults += $result
-								
-							if ($command -eq "mv") { 
-								if ($result.Succeeded) {
-									cmd.exe /c rd /s /q "$path"
-								}
-								else {
-									Write-Host "Skip delete for '$path' due to robocopy errors." -ForegroundColor Red
-								}
-							}
-							Write-Output "Finished merging $folder"
+						$mergeResults = @(Invoke-StagedPathCollection -Paths $mergedPaths -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -MergeMode -ActionLabel "merging")
+						if ($mergeResults.Count -gt 0) {
+							$sessionResults += $mergeResults
 						}
-
-
 					}
 					"Escape" {
-						Write-Host "Aborted $string3 the remaining folders."
+						Write-Host "Aborted $string3 the remaining items."
 						Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
 						Start-Sleep 2
-						exit
+						Exit-Script -Code 2 -Reason "User pressed Escape in merge prompt."
 					}
 					default {
 						Write-Host "Not a valid key. Press Enter, M, or ESC."
@@ -844,9 +1168,13 @@ try {
 
 		$sessionTimer.Stop()
 		if ($script:RunSettings.BenchmarkOutput -and $sessionResults.Count -gt 0) {
-			$totalBytes = [int64](($sessionResults | Measure-Object -Property Bytes -Sum).Sum)
-			$totalFiles = [int](($sessionResults | Measure-Object -Property Files -Sum).Sum)
-			$failedOps = @($sessionResults | Where-Object { -not $_.Succeeded }).Count
+			# Defensive filtering: count only structured transfer result objects.
+			$completedOps = @($sessionResults | Where-Object {
+				$null -ne $_ -and $_.PSObject -and $_.PSObject.Properties.Match("Succeeded").Count -gt 0
+			})
+			$totalBytes = [int64](($completedOps | Measure-Object -Property Bytes -Sum).Sum)
+			$totalFiles = [int](($completedOps | Measure-Object -Property Files -Sum).Sum)
+			$failedOps = @($completedOps | Where-Object { -not $_.Succeeded }).Count
 			$totalSeconds = [Math]::Round($sessionTimer.Elapsed.TotalSeconds, 3)
 			$aggregateThroughput = "-"
 			if ($sessionTimer.Elapsed.TotalSeconds -gt 0 -and $totalBytes -gt 0) {
@@ -855,14 +1183,16 @@ try {
 
 			Write-Host ""
 			Write-Host "=== Session Benchmark ===" -ForegroundColor Cyan
-			Write-Host ("Operations: {0} | Failed: {1}" -f $sessionResults.Count, $failedOps) -ForegroundColor Cyan
+			Write-Host ("Operations: {0} | Failed: {1}" -f $completedOps.Count, $failedOps) -ForegroundColor Cyan
 			Write-Host ("Total files: {0} | Total data: {1}" -f $totalFiles, (Format-ByteSize -Bytes $totalBytes)) -ForegroundColor Cyan
 			Write-Host ("Total time: {0}s | Avg throughput~{1}" -f $totalSeconds, $aggregateThroughput) -ForegroundColor Cyan
+			Write-RunLog ("Session benchmark | Ops={0} | Failed={1} | Files={2} | Bytes={3} | Time={4}s | Throughput={5}" -f $completedOps.Count, $failedOps, $totalFiles, $totalBytes, $totalSeconds, $aggregateThroughput)
 		}
 
 		Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
 		Write-Output ""
 		Write-Host "Finished!" -ForegroundColor Blue
+		Write-RunLog "Finished main flow."
 		Wait-ForCloseOrTune -Enabled $script:RunSettings.HoldWindow
 	}
 
@@ -872,11 +1202,13 @@ catch {
 	$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 	$errorMessage = "[$timestamp] ERROR: $($_.Exception.Message)`nStack Trace: $($_.ScriptStackTrace)`n---`n"
 	Add-Content -Path $errorLogPath -Value $errorMessage
+	Write-RunLog ("ERROR: {0}" -f $_.Exception.Message)
     
 	# Display error to user
 	Write-Host "`n[ERROR] Something went wrong!" -ForegroundColor Red
 	Write-Host $_.Exception.Message -ForegroundColor Red
 	Write-Host "`nError has been logged to: $errorLogPath" -ForegroundColor Yellow
+	Write-Host "Run log: $script:RunLogPath" -ForegroundColor Yellow
 	Write-Host "Press any key to exit..." -ForegroundColor Yellow
 	[Console]::ReadKey($true) | Out-Null
 }

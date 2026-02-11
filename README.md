@@ -1,11 +1,13 @@
 # RoboCopy Context Menu Implementation
 
 This folder contains a standalone Windows context-menu workflow based on `robocopy`:
-- `Robo-Copy` (stage source folder for copy)
-- `Robo-Cut` (stage source folder for move)
+- `Robo-Copy` (stage selected files/folders for copy)
+- `Robo-Cut` (stage selected files/folders for move)
 - `Robo-Paste` (execute copy/move into target folder)
 
 The core engine is `rcp.ps1`.
+
+Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 
 ## Components
 
@@ -14,24 +16,27 @@ The core engine is `rcp.ps1`.
   - Wires commands to VBS wrappers.
 - `RoboCopy_Silent.vbs`
   - Hidden launcher for staging (`Robo-Copy` / `Robo-Cut`).
-  - Calls `rcopySingle.ps1` with `pwsh.exe`.
+  - Calls `rcopySingle.ps1` with `pwsh.exe -NoProfile`.
 - `rcopySingle.ps1`
-  - Stores selected source folder path in registry (`HKCU:\RCWM\rc` or `HKCU:\RCWM\mv`).
-  - One staging slot per mode (copy/move).
+  - Captures full Explorer selection from the active parent window (files + folders) with short retries.
+  - Uses a named mutex (`Global\MoveTo_RoboCopy_Stage`) to serialize concurrent staging writes.
+  - Uses a short session window to append per-item invokes into one staged set.
+  - Stores staged source paths in registry (`HKCU:\RCWM\rc` or `HKCU:\RCWM\mv`) as ordered `item_000001...` values.
+  - Writes diagnostics to `stage_log.txt`.
 - `RoboPaste_Admin.vbs`
   - Elevated launcher for paste.
-  - Opens `wt.exe` as admin and runs `rcp.ps1`.
+  - Opens `wt.exe` as admin and runs `rcp.ps1` with `pwsh -NoProfile`.
 - `rcp.ps1`
-  - Reads staged folders from registry and executes `robocopy`.
-  - Handles overwrite/merge prompt when destination folder already exists.
+  - Reads staged files/folders from registry and executes `robocopy`.
+  - Handles overwrite/merge prompt when destination item already exists.
   - Prints benchmark output in the paste window (per folder + session summary).
 - `RoboTune.ps1`
-  - Interactive tuning UI for MT rules, benchmark mode, and extra robocopy args.
+  - Interactive tuning UI for MT rules, benchmark mode, debug mode, and extra robocopy args.
   - Saves tuning in `RoboTune.json`.
 
 ## Execution Flow
 
-1. Right-click source folder -> `Robo-Copy` or `Robo-Cut`.
+1. Right-click selected source files/folders -> `Robo-Copy` or `Robo-Cut`.
 2. `RoboCopy_Silent.vbs` runs `rcopySingle.ps1` hidden.
 3. `rcopySingle.ps1` writes source path into:
    - `HKCU:\RCWM\rc` for copy
@@ -40,10 +45,11 @@ The core engine is `rcp.ps1`.
 5. `RoboPaste_Admin.vbs` starts elevated `wt.exe`, running:
    - `pwsh -File rcp.ps1 auto auto "<destination>"`
 6. `rcp.ps1` auto-detects active mode (`rc` or `mv`) by checking registry properties.
-7. For each staged source folder:
-   - Builds destination as `<pasteTarget>\<sourceFolderName>`
-   - Runs `robocopy` with multi-thread flags
-   - If move mode, deletes source folder after copy (`rd /s /q`)
+7. For each staged source item:
+   - Builds destination as `<pasteTarget>\<sourceName>`
+   - If source is folder, runs folder robocopy flow (`/E`).
+   - If source is file, groups files by source parent and runs batched file-filter robocopy calls (chunked to avoid command-length limits).
+   - If move mode, deletes source item only after successful transfer.
 8. Clears staging registry entries at the end.
 
 ## robocopy Behavior in `rcp.ps1`
@@ -73,8 +79,9 @@ If destination folder already exists, script prompts:
 - Staging keys:
   - `HKCU:\RCWM\rc`
   - `HKCU:\RCWM\mv`
-- The source folder paths are stored as property names on these keys.
-- Paste step reads key property names as source list, then clears them.
+- Source paths are stored as string values (`item_000001`, `item_000002`, ...).
+- Backward compatibility: legacy path-as-property-name values are still read.
+- Paste step reads staged values as source list, then clears them.
 
 ## Requirements
 
@@ -86,7 +93,7 @@ If destination folder already exists, script prompts:
 
 ## Important Notes / Limitations
 
-- Current implementation is folder-oriented (context menu is on `Directory` keys).
+- Copy/Cut are registered on `AllFilesystemObjects` with `MultiSelectModel=Document` for reliable file/folder multi-select.
 - Registry and script paths are hardcoded to `D:\Users\joty79\scripts\Robocopy\...`.
   - In this repo, files are under `D:\Users\joty79\scripts\MoveTo\Robocopy\...`.
   - Update `.reg` and `.vbs` paths before using.
@@ -97,12 +104,13 @@ If destination folder already exists, script prompts:
 
 1. Apply `.reg` after fixing absolute paths.
 2. Stage one folder with `Robo-Copy`, then paste into test destination.
-3. Repeat with `Robo-Cut` and confirm source removal.
-4. Test collision behavior:
+3. Stage one file with `Robo-Copy`, then paste into test destination.
+4. Repeat with `Robo-Cut` and confirm source removal (file + folder).
+5. Test collision behavior:
    - existing destination folder
    - `Enter` vs `M` vs `Esc`
-5. Verify registry cleanup under `HKCU:\RCWM\rc` and `HKCU:\RCWM\mv` after completion.
-6. Validate benchmark lines in paste output (when benchmark mode is ON):
+6. Verify registry cleanup under `HKCU:\RCWM\rc` and `HKCU:\RCWM\mv` after completion.
+7. Validate benchmark lines in paste output (when benchmark mode is ON):
    - `Result: ExitCode=...`
    - `Benchmark: Files=... Data=... Time=... Throughput...`
    - `=== Session Benchmark ===`
@@ -135,10 +143,16 @@ Menu actions:
 - set `default_mt`
 - set extra robocopy args (example: `/R:0 /W:0`)
 - toggle benchmark mode
+- toggle debug mode
 
 Benchmark mode behavior:
 - `ON`: benchmark metrics enabled + paste window stays open at end.
   - End hotkeys: `Enter` close, `Esc` close, `T` open `RoboTune.ps1`.
 - `OFF`: benchmark metrics disabled and window closes as before.
+
+Debug mode behavior:
+- `ON`: appends detailed robocopy output to `robocopy_debug.log` and mirrors it in the console (`/TEE`).
+- adds detailed flags automatically when missing: `/V /TS /FP /BYTES`.
+- `OFF`: no extra debug flags or debug log from this mode.
 
 `rcp.ps1` auto-loads `RoboTune.json` on each paste run.
