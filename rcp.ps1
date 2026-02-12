@@ -35,8 +35,6 @@ $script:StageResolveTimeoutMs = 4000
 $script:StageResolveMaxTimeoutMs = 12000
 $script:StageBurstStaleSeconds = 6
 $script:StageResolvePollMs = 80
-$script:NoListRecoverTimeoutMs = 8000
-$script:NoListRecoverPollMs = 120
 
 
 function NoListAvailable {
@@ -380,54 +378,6 @@ function Resolve-StagedPayload {
 
 		Start-Sleep -Milliseconds $PollMs
 	}
-}
-
-function Wait-ForNoListRecovery {
-	param(
-		[string]$RequestedCommand = "auto",
-		[ValidateSet("rc", "mv")][string]$FallbackCommand = "rc",
-		[ValidateSet("file", "registry")][string]$Backend = "file",
-		[int]$TimeoutMs = $script:NoListRecoverTimeoutMs,
-		[int]$PollMs = $script:NoListRecoverPollMs
-	)
-
-	$requested = if ([string]::IsNullOrWhiteSpace($RequestedCommand)) { "auto" } else { $RequestedCommand.ToLowerInvariant() }
-	$commands = @()
-	if ($requested -in @("rc", "mv")) {
-		$commands += $requested
-	}
-	else {
-		$commands += $FallbackCommand
-		$commands += $(if ($FallbackCommand -eq "mv") { "rc" } else { "mv" })
-	}
-	$commands = @($commands | Select-Object -Unique)
-
-	$timer = [System.Diagnostics.Stopwatch]::StartNew()
-	while ($timer.ElapsedMilliseconds -lt $TimeoutMs) {
-		$readySnapshots = @()
-		foreach ($cmd in $commands) {
-			$snapshot = Get-StagedSnapshot -CommandName $cmd -Backend $Backend
-			if ($snapshot -and $snapshot.IsReady -and @($snapshot.Paths).Count -gt 0) {
-				$readySnapshots += $snapshot
-			}
-		}
-
-		if ($readySnapshots.Count -gt 0) {
-			return ($readySnapshots |
-				Sort-Object @{
-					Expression = { if ($_.LastStageUtc) { $_.LastStageUtc } else { [datetime]::MinValue } }
-					Descending = $true
-				}, @{
-					Expression = { $_.ActualCount }
-					Descending = $true
-				} |
-				Select-Object -First 1)
-		}
-
-		Start-Sleep -Milliseconds $PollMs
-	}
-
-	return $null
 }
 
 function Clear-StagedRegistryKey {
@@ -1453,35 +1403,6 @@ try {
 		}
 	}
 	$arrayLength = @($array).Count
-	if ($arrayLength -eq 0 -and $mode -eq "s") {
-		Write-RunLog ("No list detected | Requested={0} | Backend={1} | Attempting auto-recover wait ({2}ms)" -f $requestedCommand, $script:StageBackend, $script:NoListRecoverTimeoutMs)
-		$recoveredSnapshot = Wait-ForNoListRecovery -RequestedCommand $requestedCommand -FallbackCommand $command -Backend $script:StageBackend
-		if ($recoveredSnapshot) {
-			$command = $recoveredSnapshot.CommandName
-			if ($command -eq "mv") {
-				$flag = "/MOV"
-				$string1 = "moved"
-				$string2 = "'Robo-Cut'"
-				$string3 = "moving"
-				$string4 = "move"
-			}
-			else {
-				$flag = ""
-				$string1 = "copied"
-				$string2 = "'Robo-Copy'"
-				$string3 = "copying"
-				$string4 = "copy"
-			}
-
-			$array = @($recoveredSnapshot.Paths)
-			$arrayLength = @($array).Count
-			Write-RunLog ("No list auto-recovered | Command={0} | Expected={1} | Actual={2} | Session={3}" -f $command, $recoveredSnapshot.ExpectedCount, $recoveredSnapshot.ActualCount, $recoveredSnapshot.SessionId)
-		}
-		else {
-			Write-RunLog ("No list auto-recover failed | Requested={0} | Backend={1}" -f $requestedCommand, $script:StageBackend)
-		}
-	}
-
 	if ($arrayLength -eq 0) {
 		NoListAvailable
 	}
