@@ -800,6 +800,35 @@ function Split-FileNameBatches {
 	return [object[]]$batches.ToArray()
 }
 
+function Test-IsFullTopLevelFileSelection {
+	param(
+		[string]$SourceDirectory,
+		[string[]]$SelectedFileNames
+	)
+
+	if ([string]::IsNullOrWhiteSpace($SourceDirectory)) { return $false }
+	$selected = @($SelectedFileNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	if (@($selected).Count -eq 0) { return $false }
+
+	$allTopFiles = @(Get-ChildItem -LiteralPath $SourceDirectory -File -Force -ErrorAction SilentlyContinue)
+	if (@($allTopFiles).Count -eq 0) { return $false }
+	if (@($allTopFiles).Count -ne @($selected).Count) { return $false }
+
+	$selectedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+	foreach ($name in $selected) {
+		[void]$selectedSet.Add($name)
+	}
+
+	foreach ($file in $allTopFiles) {
+		$name = [string]$file.Name
+		if (-not $selectedSet.Contains($name)) {
+			return $false
+		}
+	}
+
+	return $true
+}
+
 function Invoke-StagedFileBatchTransfer {
 	param(
 		[string[]]$FilePaths,
@@ -857,12 +886,23 @@ function Invoke-StagedFileBatchTransfer {
 
 	$results = @()
 	$allSucceeded = $true
-	$batches = @(Split-FileNameBatches -FileNames ([string[]]$fileNames.ToArray()))
-	foreach ($fileBatch in $batches) {
-		$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters ([string[]]$fileBatch)
+	$useWildcardAllFiles = Test-IsFullTopLevelFileSelection -SourceDirectory $sourceDirectory -SelectedFileNames ([string[]]$fileNames.ToArray())
+	if ($useWildcardAllFiles) {
+		$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters @("*")
 		if ($result) {
 			$results += $result
 			if (-not $result.Succeeded) { $allSucceeded = $false }
+		}
+		Write-RunLog ("FastPath wildcard-all-files used | Source='{0}' | Count={1}" -f $sourceDirectory, $fileNames.Count)
+	}
+	else {
+		$batches = @(Split-FileNameBatches -FileNames ([string[]]$fileNames.ToArray()))
+		foreach ($fileBatch in $batches) {
+			$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters ([string[]]$fileBatch)
+			if ($result) {
+				$results += $result
+				if (-not $result.Succeeded) { $allSucceeded = $false }
+			}
 		}
 	}
 

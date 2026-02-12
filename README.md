@@ -161,5 +161,6 @@ Performance notes:
 - Folder copy/cut remains the fastest path because it executes directory-level robocopy flow.
 - Large selection/conflict previews are truncated in normal mode to reduce console rendering overhead.
 - Context-menu single mode now uses a direct fast path (no pre-scan conflict prompt). Manual mode keeps the interactive conflict prompt.
+- If selected files are exactly all top-level files of a source folder, a wildcard fast-path (`*`) is used to reduce batch count and improve speed.
 
 `rcp.ps1` auto-loads `RoboTune.json` on each paste run.
