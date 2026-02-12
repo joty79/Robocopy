@@ -6,11 +6,12 @@
 Option Explicit
 
 Const SCRIPT_ROOT = "D:\Users\joty79\scripts\Robocopy"
-Const STALE_LOCK_SECONDS = 120
+Const STALE_LOCK_SECONDS = 30
 Const BURST_SUPPRESS_SECONDS = 6
+Const BURST_DUPLICATE_WINDOW_SECONDS = 1
 Const MULTI_STAGE_EXIT_CODE = 10
-Const LOCK_RETRY_ATTEMPTS = 4
-Const LOCK_RETRY_DELAY_MS = 700
+Const LOCK_RETRY_ATTEMPTS = 10
+Const LOCK_RETRY_DELAY_MS = 600
 
 Dim STATE_DIR, LOCK_FILE
 STATE_DIR = SCRIPT_ROOT & "\state"
@@ -84,10 +85,16 @@ Function HasActiveStageSession(ByVal modeValue)
     On Error Resume Next
     HasActiveStageSession = False
 
-    Dim modeKey, stageStamp, firstItem
+    Dim modeKey, readyState, expectedCount, firstItem
     modeKey = "HKCU\RCWM\" & LCase(modeValue) & "\"
 
-    stageStamp = objShell.RegRead(modeKey & "__last_stage_utc")
+    readyState = objShell.RegRead(modeKey & "__ready")
+    If Err.Number <> 0 Then
+        Err.Clear
+        Exit Function
+    End If
+
+    expectedCount = objShell.RegRead(modeKey & "__expected_count")
     If Err.Number <> 0 Then
         Err.Clear
         Exit Function
@@ -99,7 +106,19 @@ Function HasActiveStageSession(ByVal modeValue)
         Exit Function
     End If
 
-    If Len(Trim(CStr(stageStamp))) > 0 And Len(Trim(CStr(firstItem))) > 0 Then
+    Dim readyNum, expectedNum
+    readyNum = 0
+    expectedNum = 0
+    On Error Resume Next
+    readyNum = CLng(readyState)
+    expectedNum = CLng(expectedCount)
+    If Err.Number <> 0 Then
+        Err.Clear
+        Exit Function
+    End If
+    On Error GoTo 0
+
+    If readyNum = 1 And expectedNum > 0 And Len(Trim(CStr(firstItem))) > 0 Then
         HasActiveStageSession = True
     End If
 
@@ -142,7 +161,17 @@ Function IsSuppressedBurst(ByVal modeValue, ByVal parentValue)
 
     If (lastMode = LCase(modeValue)) And (lastParent = parentValue) Then
         If HasActiveStageSession(modeValue) Then
-            IsSuppressedBurst = True
+            ' Suppress only near-instant duplicate invokes from the same Explorer burst.
+            ' For deliberate second copy actions from the same folder, allow re-stage.
+            If ageSec <= BURST_DUPLICATE_WINDOW_SECONDS Then
+                IsSuppressedBurst = True
+            Else
+                On Error Resume Next
+                If fso.FileExists(BURST_FILE) Then
+                    fso.DeleteFile BURST_FILE, True
+                End If
+                On Error GoTo 0
+            End If
         Else
             On Error Resume Next
             If fso.FileExists(BURST_FILE) Then

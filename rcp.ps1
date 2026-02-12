@@ -28,7 +28,7 @@ $script:ThreadDecisionCache = New-Object 'System.Collections.Generic.Dictionary[
 $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageBurstMarkerPath = Join-Path $script:StageStateDir "stage.burst"
 $script:StageLockPath = Join-Path $script:StageStateDir "stage.lock"
-$script:StageReadyMaxWaitMs = 6000
+$script:StageReadyMaxWaitMs = 12000
 $script:StageReadyFastFailMs = 700
 $script:StageReadyPollMs = 150
 
@@ -255,6 +255,81 @@ function Select-ActiveStagedCommand {
 	if ($rcReady) { return "rc" }
 	if ($mvReady) { return "mv" }
 	return $null
+}
+
+function Resolve-ActiveStagedSnapshotWithWait {
+	param(
+		[string]$RequestedCommand,
+		[int]$MaxWaitMs = $script:StageReadyMaxWaitMs,
+		[int]$FastFailMs = $script:StageReadyFastFailMs,
+		[int]$PollMs = $script:StageReadyPollMs
+	)
+
+	$timer = [System.Diagnostics.Stopwatch]::StartNew()
+	$hadStageSignal = $false
+	$effectiveFastFailMs = $FastFailMs
+	$requestedNormalized = ""
+
+	if (-not [string]::IsNullOrWhiteSpace($RequestedCommand)) {
+		$requestedNormalized = $RequestedCommand.Trim().ToLowerInvariant()
+	}
+
+	# `auto` (or missing command) is common from paste wrapper.
+	# Give it a longer pre-stage window to avoid false "NoListAvailable" races.
+	if ($requestedNormalized -ne "rc" -and $requestedNormalized -ne "mv") {
+		$effectiveFastFailMs = [Math]::Max($FastFailMs, 3000)
+	}
+
+	while ($true) {
+		$rcSnapshot = Get-StagedSnapshot -CommandName "rc"
+		$mvSnapshot = Get-StagedSnapshot -CommandName "mv"
+		$selectedCommand = Select-ActiveStagedCommand -RcSnapshot $rcSnapshot -MvSnapshot $mvSnapshot -RequestedCommand $requestedNormalized
+
+		if ($selectedCommand) {
+			$activeSnapshot = if ($selectedCommand -eq "mv") { $mvSnapshot } else { $rcSnapshot }
+			if ($timer.ElapsedMilliseconds -gt 0) {
+				Write-RunLog ("Stage resolve ready | Command={0} | WaitMs={1} | Expected={2} | Actual={3} | Session={4}" -f $selectedCommand, $timer.ElapsedMilliseconds, $activeSnapshot.ExpectedCount, @($activeSnapshot.Paths).Count, $activeSnapshot.SessionId)
+			}
+			return [pscustomobject]@{
+				CommandName    = $selectedCommand
+				Requested      = $requestedNormalized
+				RcSnapshot     = $rcSnapshot
+				MvSnapshot     = $mvSnapshot
+				ActiveSnapshot = $activeSnapshot
+			}
+		}
+
+		$lockExists = Test-Path -LiteralPath $script:StageLockPath
+		$burstExists = Test-Path -LiteralPath $script:StageBurstMarkerPath
+		if ($lockExists -or $burstExists) {
+			$hadStageSignal = $true
+		}
+
+		if ($timer.ElapsedMilliseconds -ge $MaxWaitMs) {
+			if ($hadStageSignal) {
+				Write-RunLog ("Stage resolve timeout | Requested={0} | WaitMs={1} | HadSignal={2}" -f $requestedNormalized, $timer.ElapsedMilliseconds, $hadStageSignal)
+			}
+			return [pscustomobject]@{
+				CommandName    = $null
+				Requested      = $requestedNormalized
+				RcSnapshot     = $rcSnapshot
+				MvSnapshot     = $mvSnapshot
+				ActiveSnapshot = $null
+			}
+		}
+
+		if ((-not $lockExists) -and (-not $burstExists) -and (-not $hadStageSignal) -and ($timer.ElapsedMilliseconds -ge $effectiveFastFailMs)) {
+			return [pscustomobject]@{
+				CommandName    = $null
+				Requested      = $requestedNormalized
+				RcSnapshot     = $rcSnapshot
+				MvSnapshot     = $mvSnapshot
+				ActiveSnapshot = $null
+			}
+		}
+
+		Start-Sleep -Milliseconds $PollMs
+	}
 }
 
 function Get-StagedPathListWithWait {
@@ -705,6 +780,33 @@ function Write-RunLog {
 		Add-Content -LiteralPath $script:RunLogPath -Value $line -Encoding UTF8
 	}
 	catch { }
+}
+
+function Clear-StagedRegistryValues {
+	param([ValidateSet("rc", "mv")] [string]$CommandName)
+
+	$regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
+	if (-not (Test-Path -LiteralPath $regPath)) { return }
+
+	$item = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
+	if (-not $item) { return }
+
+	$namesToRemove = @(
+		$item.PSObject.Properties |
+		Where-Object {
+			$_.Name -notmatch '^PS' -and
+			$_.Name -ne '(default)'
+		} |
+		Select-Object -ExpandProperty Name
+	)
+
+	foreach ($name in @($namesToRemove)) {
+		if ([string]::IsNullOrWhiteSpace([string]$name)) { continue }
+		try {
+			Remove-ItemProperty -LiteralPath $regPath -Name $name -ErrorAction SilentlyContinue
+		}
+		catch { }
+	}
 }
 
 function Clear-StagingBurstMarker {
@@ -1233,9 +1335,11 @@ try {
 		$requestedMode = ([string]$args[1]).Trim().ToLowerInvariant()
 	}
 
-	$rcSnapshot = Get-StagedSnapshot -CommandName "rc"
-	$mvSnapshot = Get-StagedSnapshot -CommandName "mv"
-	$activeStagedCommand = Select-ActiveStagedCommand -RcSnapshot $rcSnapshot -MvSnapshot $mvSnapshot -RequestedCommand $requestedCommand
+	$resolvedStage = Resolve-ActiveStagedSnapshotWithWait -RequestedCommand $requestedCommand
+	$rcSnapshot = $resolvedStage.RcSnapshot
+	$mvSnapshot = $resolvedStage.MvSnapshot
+	$activeStagedCommand = $resolvedStage.CommandName
+	$activeSnapshot = $resolvedStage.ActiveSnapshot
 
 	if ($activeStagedCommand) {
 		$command = $activeStagedCommand
@@ -1282,7 +1386,9 @@ try {
 	}
 
 	# Read staged files/folders from registry list.
-	$activeSnapshot = if ($command -eq "mv") { $mvSnapshot } else { $rcSnapshot }
+	if (-not $activeSnapshot) {
+		$activeSnapshot = if ($command -eq "mv") { $mvSnapshot } else { $rcSnapshot }
+	}
 	if (-not $activeSnapshot -or $activeSnapshot.CommandName -ne $command) {
 		$activeSnapshot = Get-StagedSnapshot -CommandName $command
 	}
@@ -1348,7 +1454,7 @@ try {
 							}	
 
 							{ "y", "yes" -contains $_ } {
-								Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * | Out-Null
+								Clear-StagedRegistryValues -CommandName $command
 								Write-Host "List deleted."
 								Start-Sleep 2
 								Exit-Script -Code 0 -Reason "User deleted source list."
@@ -1464,7 +1570,7 @@ try {
 						}
 						"Escape" {
 							Write-Host "Aborted $string3 the remaining items."
-							Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
+							Clear-StagedRegistryValues -CommandName $command
 							Start-Sleep 2
 							Exit-Script -Code 2 -Reason "User pressed Escape in merge prompt."
 						}
@@ -1503,7 +1609,7 @@ try {
 			Write-RunLog ("Session benchmark | Ops={0} | Failed={1} | Files={2} | Bytes={3} | Time={4}s | Throughput={5}" -f $completedOps.Count, $failedOps, $totalFiles, $totalBytes, $totalSeconds, $aggregateThroughput)
 		}
 
-		Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
+		Clear-StagedRegistryValues -CommandName $command
 		Write-Output ""
 		Write-Host "Finished!" -ForegroundColor Blue
 		Write-RunLog "Finished main flow."

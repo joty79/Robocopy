@@ -191,6 +191,33 @@ function Get-ExistingStagedPaths {
     return Get-UniqueExistingPaths -Candidates ([string[]]$paths.ToArray())
 }
 
+function Clear-RegistryValuesByName {
+	param([string]$RegistryPath)
+
+	if ([string]::IsNullOrWhiteSpace($RegistryPath)) { return }
+	if (-not (Test-Path -LiteralPath $RegistryPath)) { return }
+
+	$item = Get-ItemProperty -LiteralPath $RegistryPath -ErrorAction SilentlyContinue
+	if (-not $item) { return }
+
+	$namesToRemove = @(
+		$item.PSObject.Properties |
+		Where-Object {
+			$_.Name -notmatch '^PS' -and
+			$_.Name -ne '(default)'
+		} |
+		Select-Object -ExpandProperty Name
+	)
+
+	foreach ($name in @($namesToRemove)) {
+		if ([string]::IsNullOrWhiteSpace([string]$name)) { continue }
+		try {
+			Remove-ItemProperty -LiteralPath $RegistryPath -Name $name -ErrorAction SilentlyContinue
+		}
+		catch { }
+	}
+}
+
 function Save-StagedPaths {
 	param(
 		[ValidateSet("rc", "mv")]
@@ -235,7 +262,7 @@ function Save-StagedPaths {
 	$expectedCount = @($combined).Count
 	$stageUtc = (Get-Date).ToUniversalTime().ToString("o")
 
-	Remove-ItemProperty -LiteralPath $regPath -Name * -ErrorAction SilentlyContinue
+	Clear-RegistryValuesByName -RegistryPath $regPath
 	New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 0 -Force | Out-Null
 	for ($i = 0; $i -lt @($combined).Count; $i++) {
 		$valueName = "item_{0:D6}" -f ($i + 1)
