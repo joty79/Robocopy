@@ -114,12 +114,17 @@ function Get-AnchorParentPath {
 }
 
 function Get-ExplorerSelectionFromParent {
-    param([string]$ParentPath)
+    param(
+        [string]$ParentPath,
+        [string]$AnchorPath
+    )
 
     $parentNormalized = Resolve-NormalPath -PathValue $ParentPath
     if (-not $parentNormalized) { return @() }
+    $anchorNormalized = Resolve-NormalPath -PathValue $AnchorPath
 
-    $results = New-Object System.Collections.Generic.List[string]
+    $fallbackResults = New-Object System.Collections.Generic.List[string]
+    $fallbackCount = -1
 
     try {
         $shell = New-Object -ComObject Shell.Application
@@ -141,21 +146,34 @@ function Get-ExplorerSelectionFromParent {
                     continue
                 }
 
+                $current = New-Object System.Collections.Generic.List[string]
+                $anchorHit = $false
                 foreach ($entry in @($doc.SelectedItems())) {
                     $entryPath = [string]$entry.Path
                     if (-not [string]::IsNullOrWhiteSpace($entryPath)) {
-                        [void]$results.Add($entryPath)
+                        [void]$current.Add($entryPath)
+                        if ($anchorNormalized -and $entryPath.Equals($anchorNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $anchorHit = $true
+                        }
                     }
                 }
 
-                if ($results.Count -gt 0) { break }
+                # Prefer the exact Explorer window whose selection contains the clicked anchor item.
+                if ($anchorHit -and $current.Count -gt 0) {
+                    return [string[]]$current.ToArray()
+                }
+
+                if ($current.Count -gt $fallbackCount) {
+                    $fallbackCount = $current.Count
+                    $fallbackResults = $current
+                }
             }
             catch { }
         }
     }
     catch { }
 
-    return [string[]]$results.ToArray()
+    return [string[]]$fallbackResults.ToArray()
 }
 
 function Get-UniqueExistingPaths {
@@ -176,7 +194,10 @@ function Get-UniqueExistingPaths {
 }
 
 function Get-BestSelectionFromParent {
-    param([string]$ParentPath)
+    param(
+        [string]$ParentPath,
+        [string]$AnchorPath
+    )
 
     if ([string]::IsNullOrWhiteSpace($ParentPath)) { return @() }
 
@@ -185,7 +206,7 @@ function Get-BestSelectionFromParent {
     $stableHits = 0
 
     for ($attempt = 1; $attempt -le $script:SelectionRetryCount; $attempt++) {
-        $selectionCandidates = Get-ExplorerSelectionFromParent -ParentPath $ParentPath
+        $selectionCandidates = Get-ExplorerSelectionFromParent -ParentPath $ParentPath -AnchorPath $AnchorPath
         $currentPaths = @(Get-UniqueExistingPaths -Candidates $selectionCandidates)
         $currentSignature = [string]::Join("`n", $currentPaths)
 
@@ -345,7 +366,7 @@ try {
     }
 
     $parentPath = Get-AnchorParentPath -PathValue $anchorResolved
-    $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath)
+    $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath -AnchorPath $anchorResolved)
 
     if ($selectedPaths.Count -eq 0) {
         $selectedPaths = @($anchorResolved)
