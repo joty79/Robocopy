@@ -78,6 +78,32 @@ Function GetAnchorParentLower(ByVal pathValue)
     On Error GoTo 0
 End Function
 
+Function HasActiveStageSession(ByVal modeValue)
+    On Error Resume Next
+    HasActiveStageSession = False
+
+    Dim modeKey, stageStamp, firstItem
+    modeKey = "HKCU\RCWM\" & LCase(modeValue) & "\"
+
+    stageStamp = objShell.RegRead(modeKey & "__last_stage_utc")
+    If Err.Number <> 0 Then
+        Err.Clear
+        Exit Function
+    End If
+
+    firstItem = objShell.RegRead(modeKey & "item_000001")
+    If Err.Number <> 0 Then
+        Err.Clear
+        Exit Function
+    End If
+
+    If Len(Trim(CStr(stageStamp))) > 0 And Len(Trim(CStr(firstItem))) > 0 Then
+        HasActiveStageSession = True
+    End If
+
+    On Error GoTo 0
+End Function
+
 Function IsSuppressedBurst(ByVal modeValue, ByVal parentValue)
     On Error Resume Next
     IsSuppressedBurst = False
@@ -113,7 +139,15 @@ Function IsSuppressedBurst(ByVal modeValue, ByVal parentValue)
     lastParent = LCase(Trim(Mid(payload, sepPos + 1)))
 
     If (lastMode = LCase(modeValue)) And (lastParent = parentValue) Then
-        IsSuppressedBurst = True
+        If HasActiveStageSession(modeValue) Then
+            IsSuppressedBurst = True
+        Else
+            On Error Resume Next
+            If fso.FileExists(BURST_FILE) Then
+                fso.DeleteFile BURST_FILE, True
+            End If
+            On Error GoTo 0
+        End If
     End If
 
     On Error GoTo 0
