@@ -1118,7 +1118,7 @@ try {
 	}
 
 	# Read staged files/folders from registry list.
-	$array = Get-StagedPathListWithWait -CommandName $command
+	$array = Get-StagedPathList -CommandName $command
 	$arrayLength = @($array).Count
 	if ($arrayLength -eq 0) {
 		NoListAvailable
