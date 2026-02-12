@@ -56,6 +56,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 
 Base flags used:
 - `/E /NP /NJH /NJS /NC /NS`
+- Normal mode adds `/NFL /NDL` to reduce per-file console overhead on large multi-select runs.
 
 Move mode adds:
 - `/MOV`
@@ -154,5 +155,11 @@ Debug mode behavior:
 - `ON`: appends detailed robocopy output to `robocopy_debug.log` and mirrors it in the console (`/TEE`).
 - adds detailed flags automatically when missing: `/V /TS /FP /BYTES`.
 - `OFF`: no extra debug flags or debug log from this mode.
+
+Performance notes:
+- File multi-select is grouped by source directory and passed to robocopy in larger filename batches (command-line safe chunking).
+- Folder copy/cut remains the fastest path because it executes directory-level robocopy flow.
+- Large selection/conflict previews are truncated in normal mode to reduce console rendering overhead.
+- Context-menu single mode now uses a direct fast path (no pre-scan conflict prompt). Manual mode keeps the interactive conflict prompt.
 
 `rcp.ps1` auto-loads `RoboTune.json` on each paste run.

@@ -24,6 +24,7 @@
 #set high process priority
 $process = Get-Process -Id $pid
 $process.PriorityClass = 'High'
+$script:ThreadDecisionCache = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
 
 
 function NoListAvailable {
@@ -570,7 +571,17 @@ function Invoke-RobocopyTransfer {
 		[string[]]$FileFilters
 	)
 
-	$decision = Get-ThreadDecision -SourcePath $SourcePath -DestinationPath $DestinationPath
+	[object]$decision = $null
+	$cacheKey = "$SourcePath|$DestinationPath"
+	if ($script:ThreadDecisionCache -and $script:ThreadDecisionCache.TryGetValue($cacheKey, [ref]$decision)) {
+		# cached decision reused
+	}
+	else {
+		$decision = Get-ThreadDecision -SourcePath $SourcePath -DestinationPath $DestinationPath
+		if ($script:ThreadDecisionCache) {
+			$script:ThreadDecisionCache[$cacheKey] = $decision
+		}
+	}
 	$threadCount = [int]$decision.ThreadCount
 
 	$robocopyArgs = @($SourcePath, $DestinationPath)
@@ -585,6 +596,10 @@ function Invoke-RobocopyTransfer {
 		$robocopyArgs += "/E"
 	}
 	$robocopyArgs += @("/NP", "/NJH", "/NJS", "/NC", "/NS")
+	if (-not $script:RunSettings.DebugMode) {
+		# In normal mode suppress per-file/per-dir lines for faster large multi-select operations.
+		$robocopyArgs += @("/NFL", "/NDL")
+	}
 	if ($ModeFlag) {
 		$robocopyArgs += $ModeFlag
 	}
@@ -626,14 +641,25 @@ function Invoke-RobocopyTransfer {
 		$sourceStats = Get-DirectoryStats -PathValue $SourcePath -SourceIsFile:$SourceIsFile -FileFilters $FileFilters
 	}
 
+	$showTransferInfo = ([bool]$script:RunSettings.DebugMode -or [bool]$script:RunSettings.BenchmarkOutput)
 	$sourceDiskText = if ($null -eq $decision.SourceDisk) { "?" } else { "$($decision.SourceDisk)" }
 	$destDiskText = if ($null -eq $decision.DestDisk) { "?" } else { "$($decision.DestDisk)" }
-	Write-Host "Using /MT:$threadCount [$($decision.Reason)]" -ForegroundColor DarkGray
-	Write-Host "Media: $($decision.SourceMedia) (Disk $sourceDiskText) -> $($decision.DestMedia) (Disk $destDiskText)" -ForegroundColor DarkGray
-	Write-RunLog ("Transfer start | Source='{0}' | Dest='{1}' | MT={2} | Reason='{3}' | Media={4}->{5}" -f $SourcePath, $DestinationPath, $threadCount, $decision.Reason, $decision.SourceMedia, $decision.DestMedia)
+	if ($showTransferInfo) {
+		Write-Host "Using /MT:$threadCount [$($decision.Reason)]" -ForegroundColor DarkGray
+		Write-Host "Media: $($decision.SourceMedia) (Disk $sourceDiskText) -> $($decision.DestMedia) (Disk $destDiskText)" -ForegroundColor DarkGray
+	}
+	$writeDetailedRunLog = ([bool]$script:RunSettings.DebugMode -or [bool]$script:RunSettings.BenchmarkOutput)
+	if ($writeDetailedRunLog) {
+		Write-RunLog ("Transfer start | Source='{0}' | Dest='{1}' | MT={2} | Reason='{3}' | Media={4}->{5}" -f $SourcePath, $DestinationPath, $threadCount, $decision.Reason, $decision.SourceMedia, $decision.DestMedia)
+	}
 
 	$timer = [System.Diagnostics.Stopwatch]::StartNew()
-	$null = (& C:\Windows\System32\robocopy.exe @robocopyArgs | Out-Host)
+	if ($showTransferInfo) {
+		$null = (& C:\Windows\System32\robocopy.exe @robocopyArgs | Out-Host)
+	}
+	else {
+		$null = (& C:\Windows\System32\robocopy.exe @robocopyArgs | Out-Null)
+	}
 	$exitCode = $LASTEXITCODE
 	$timer.Stop()
 
@@ -646,8 +672,12 @@ function Invoke-RobocopyTransfer {
 
 	$exitDescription = Get-RobocopyExitDescription -ExitCode $exitCode
 	$statusColor = if ($exitCode -lt 8) { "Green" } else { "Red" }
-	Write-Host ("Result: ExitCode={0} | {1}" -f $exitCode, $exitDescription) -ForegroundColor $statusColor
-	Write-RunLog ("Transfer result | ExitCode={0} | Desc='{1}' | Elapsed={2}s | Files={3} | Bytes={4}" -f $exitCode, $exitDescription, $elapsedSeconds, $sourceStats.Files, $sourceStats.Bytes)
+	if ($showTransferInfo -or $exitCode -ge 8) {
+		Write-Host ("Result: ExitCode={0} | {1}" -f $exitCode, $exitDescription) -ForegroundColor $statusColor
+	}
+	if ($writeDetailedRunLog -or $exitCode -ge 8) {
+		Write-RunLog ("Transfer result | ExitCode={0} | Desc='{1}' | Elapsed={2}s | Files={3} | Bytes={4}" -f $exitCode, $exitDescription, $elapsedSeconds, $sourceStats.Files, $sourceStats.Bytes)
+	}
 	if ($benchmarkEnabled) {
 		Write-Host ("Benchmark: Files={0} | Data={1} | Time={2}s | Throughput~{3}" -f $sourceStats.Files, (Format-ByteSize -Bytes $sourceStats.Bytes), $elapsedSeconds, $throughput) -ForegroundColor Cyan
 	}
@@ -741,7 +771,7 @@ function Invoke-StagedTransfer {
 function Split-FileNameBatches {
 	param(
 		[string[]]$FileNames,
-		[int]$MaxChars = 6500
+		[int]$MaxChars = 26000
 	)
 
 	$allNames = @($FileNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -794,13 +824,9 @@ function Invoke-StagedFileBatchTransfer {
 	$sourceDirectory = $null
 
 	foreach ($path in $paths) {
-		$item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-		if (-not $item -or $item.PSIsContainer) { continue }
+		if ([string]::IsNullOrWhiteSpace($path)) { continue }
 
-		$itemDirectory = [string]$item.DirectoryName
-		if ([string]::IsNullOrWhiteSpace($itemDirectory)) {
-			$itemDirectory = Split-Path -Path $item.FullName -Parent
-		}
+		$itemDirectory = Split-Path -Path $path -Parent
 		if ([string]::IsNullOrWhiteSpace($itemDirectory)) { continue }
 
 		if (-not $sourceDirectory) {
@@ -810,12 +836,13 @@ function Invoke-StagedFileBatchTransfer {
 			continue
 		}
 
-		$fullPath = [string]$item.FullName
+		$fullPath = [string]$path
 		if ($seenPaths.Add($fullPath)) {
 			[void]$resolvedFilePaths.Add($fullPath)
 		}
 
-		$name = [string]$item.Name
+		$name = Split-Path -Path $path -Leaf
+		if ([string]::IsNullOrWhiteSpace($name)) { continue }
 		if ($seenNames.Add($name)) {
 			[void]$fileNames.Add($name)
 		}
@@ -871,18 +898,18 @@ function Invoke-StagedPathCollection {
 	$pathList = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
 	foreach ($path in $pathList) {
-		if (-not (Test-Path -LiteralPath $path)) {
+		$isDirectory = [System.IO.Directory]::Exists($path)
+		$isFile = $false
+		if (-not $isDirectory) {
+			$isFile = [System.IO.File]::Exists($path)
+		}
+
+		if (-not $isDirectory -and -not $isFile) {
 			Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
 			continue
 		}
 
-		$item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-		if (-not $item) {
-			Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
-			continue
-		}
-
-		if ($item.PSIsContainer) {
+		if ($isDirectory) {
 			$transfer = Invoke-StagedTransfer -SourcePath $path -PasteIntoDirectory $PasteIntoDirectory -ModeFlag $ModeFlag -IsMove:$IsMove -MergeMode:$MergeMode
 			if ($transfer.Result) {
 				$results += $transfer.Result
@@ -893,10 +920,7 @@ function Invoke-StagedPathCollection {
 			continue
 		}
 
-		$sourceDirectory = [string]$item.DirectoryName
-		if ([string]::IsNullOrWhiteSpace($sourceDirectory)) {
-			$sourceDirectory = Split-Path -Path $item.FullName -Parent
-		}
+		$sourceDirectory = Split-Path -Path $path -Parent
 		if ([string]::IsNullOrWhiteSpace($sourceDirectory)) {
 			Write-Host "Cannot resolve source directory for file '$path'." -ForegroundColor Red
 			continue
@@ -1016,7 +1040,13 @@ try {
 			Write-host "You're about to $string4 the following" $array.length "items into" $pasteDirectoryDisplay":"
 		}
 
-		$array
+		$previewLimit = if ($script:RunSettings.DebugMode -or $script:RunSettings.BenchmarkOutput) { 100 } else { 25 }
+		$previewItems = @($array | Select-Object -First $previewLimit)
+		$previewItems
+		$remainingItems = @($array).Count - @($previewItems).Count
+		if ($remainingItems -gt 0) {
+			Write-Host ("... and {0} more items (hidden for performance)." -f $remainingItems) -ForegroundColor DarkGray
+		}
 
 		#Prompt
 		Do {
@@ -1077,90 +1107,101 @@ try {
 		$sessionResults = @()
 		$isMove = ($command -eq "mv")
 
-		$merge = New-Object System.Collections.Generic.List[string]
-		$ready = New-Object System.Collections.Generic.List[string]
-
-		foreach ($path in $array) {
-			if (-not (Test-Path -LiteralPath $path)) {
-				Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
-				continue
+		if ($mode -eq "s") {
+			# Context-menu fast path: skip pre-scan conflict classification and execute directly.
+			$directResults = @(Invoke-StagedPathCollection -Paths $array -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove)
+			if ($directResults.Count -gt 0) {
+				$sessionResults += $directResults
+			}
+		}
+		else {
+			$merge = New-Object System.Collections.Generic.List[string]
+			$ready = New-Object System.Collections.Generic.List[string]
+			$destinationNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+			foreach ($destItem in @(Get-ChildItem -LiteralPath $pasteIntoDirectory -Force -ErrorAction SilentlyContinue)) {
+				if (-not $destItem) { continue }
+				$name = [string]$destItem.Name
+				if ([string]::IsNullOrWhiteSpace($name)) { continue }
+				[void]$destinationNameSet.Add($name)
 			}
 
-			$item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-			if (-not $item) {
-				Write-Host "Source item '$path' does not exist." -ForegroundColor Yellow
-				continue
-			}
-
-			$itemName = [string]$item.Name
-			if ([string]::IsNullOrWhiteSpace($itemName)) {
+			foreach ($path in $array) {
 				$itemName = Split-Path -Path $path -Leaf
-			}
-
-			$destination = Join-Path $pasteIntoDirectory $itemName
-			if (Test-Path -LiteralPath $destination) {
-				[void]$merge.Add($path)
-			}
-			else {
-				[void]$ready.Add($path)
-			}
-		}
-
-		if ($ready.Count -gt 0) {
-			$readyResults = @(Invoke-StagedPathCollection -Paths ([string[]]$ready.ToArray()) -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -ActionLabel $string3)
-			if ($readyResults.Count -gt 0) {
-				$sessionResults += $readyResults
-			}
-		}
-
-		#if merge array exists
-		if ($merge.Count -gt 0) {
-			$mergedPaths = [string[]]$merge.ToArray()
-			Write-host "Successfully $string1" $($arrayLength - $merge.Count) "out of" $arrayLength "items."
-
-			if ($merge.Count -eq 1) {
-				Write-host "The following item already exists inside" $pasteDirectoryDisplay":"
-			}
-			else {
-				Write-host "The following" $merge.Count "items already exist inside" $pasteDirectoryDisplay":"
-			}
-			$mergedPaths
-
-			Write-Host ""
-			Write-Host "[Enter] = Overwrite | [M] = Merge | [ESC] = Abort" -ForegroundColor Yellow
-		
-			Do {
-				$Valid = $True
-				$keyInfo = [Console]::ReadKey($true)
-				$key = $keyInfo.Key
-			
-				Switch ($key) {
-					"Enter" {
-						Write-Output "Overwriting ..."
-						$overwriteResults = @(Invoke-StagedPathCollection -Paths $mergedPaths -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -ActionLabel "overwriting")
-						if ($overwriteResults.Count -gt 0) {
-							$sessionResults += $overwriteResults
-						}
-					}
-					"M" {
-						Write-Host "Merging ..."
-						$mergeResults = @(Invoke-StagedPathCollection -Paths $mergedPaths -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -MergeMode -ActionLabel "merging")
-						if ($mergeResults.Count -gt 0) {
-							$sessionResults += $mergeResults
-						}
-					}
-					"Escape" {
-						Write-Host "Aborted $string3 the remaining items."
-						Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
-						Start-Sleep 2
-						Exit-Script -Code 2 -Reason "User pressed Escape in merge prompt."
-					}
-					default {
-						Write-Host "Not a valid key. Press Enter, M, or ESC."
-						$Valid = $False
-					}
+				if ([string]::IsNullOrWhiteSpace($itemName)) {
+					continue
 				}
-			} Until ($Valid)
+				if ($destinationNameSet.Contains($itemName)) {
+					[void]$merge.Add($path)
+				}
+				else {
+					[void]$ready.Add($path)
+					# Track names that will be created in this run so duplicates in the same selection are treated as conflicts.
+					[void]$destinationNameSet.Add($itemName)
+				}
+			}
+
+			if ($ready.Count -gt 0) {
+				$readyResults = @(Invoke-StagedPathCollection -Paths ([string[]]$ready.ToArray()) -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -ActionLabel $string3)
+				if ($readyResults.Count -gt 0) {
+					$sessionResults += $readyResults
+				}
+			}
+
+			#if merge array exists
+			if ($merge.Count -gt 0) {
+				$mergedPaths = [string[]]$merge.ToArray()
+				Write-host "Successfully $string1" $($arrayLength - $merge.Count) "out of" $arrayLength "items."
+
+				if ($merge.Count -eq 1) {
+					Write-host "The following item already exists inside" $pasteDirectoryDisplay":"
+				}
+				else {
+					Write-host "The following" $merge.Count "items already exist inside" $pasteDirectoryDisplay":"
+				}
+				$previewLimit = if ($script:RunSettings.DebugMode -or $script:RunSettings.BenchmarkOutput) { 100 } else { 25 }
+				$previewItems = @($mergedPaths | Select-Object -First $previewLimit)
+				$previewItems
+				$remainingItems = @($mergedPaths).Count - @($previewItems).Count
+				if ($remainingItems -gt 0) {
+					Write-Host ("... and {0} more conflict items (hidden for performance)." -f $remainingItems) -ForegroundColor DarkGray
+				}
+
+				Write-Host ""
+				Write-Host "[Enter] = Overwrite | [M] = Merge | [ESC] = Abort" -ForegroundColor Yellow
+			
+				Do {
+					$Valid = $True
+					$keyInfo = [Console]::ReadKey($true)
+					$key = $keyInfo.Key
+				
+					Switch ($key) {
+						"Enter" {
+							Write-Output "Overwriting ..."
+							$overwriteResults = @(Invoke-StagedPathCollection -Paths $mergedPaths -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -ActionLabel "overwriting")
+							if ($overwriteResults.Count -gt 0) {
+								$sessionResults += $overwriteResults
+							}
+						}
+						"M" {
+							Write-Host "Merging ..."
+							$mergeResults = @(Invoke-StagedPathCollection -Paths $mergedPaths -PasteIntoDirectory $pasteIntoDirectory -ModeFlag $flag -IsMove:$isMove -MergeMode -ActionLabel "merging")
+							if ($mergeResults.Count -gt 0) {
+								$sessionResults += $mergeResults
+							}
+						}
+						"Escape" {
+							Write-Host "Aborted $string3 the remaining items."
+							Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
+							Start-Sleep 2
+							Exit-Script -Code 2 -Reason "User pressed Escape in merge prompt."
+						}
+						default {
+							Write-Host "Not a valid key. Press Enter, M, or ESC."
+							$Valid = $False
+						}
+					}
+				} Until ($Valid)
+			}
 		}
 
 
