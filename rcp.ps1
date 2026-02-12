@@ -27,6 +27,10 @@ $process.PriorityClass = 'High'
 $script:ThreadDecisionCache = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
 $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageBurstMarkerPath = Join-Path $script:StageStateDir "stage.burst"
+$script:StageLockPath = Join-Path $script:StageStateDir "stage.lock"
+$script:StageReadyMaxWaitMs = 6000
+$script:StageReadyFastFailMs = 700
+$script:StageReadyPollMs = 150
 
 
 function NoListAvailable {
@@ -99,6 +103,45 @@ function Get-StagedPathList {
 	}
 
 	return Get-UniquePathList -InputPaths @($paths)
+}
+
+function Get-StagedPathListWithWait {
+	param(
+		[string]$CommandName,
+		[int]$MaxWaitMs = $script:StageReadyMaxWaitMs,
+		[int]$FastFailMs = $script:StageReadyFastFailMs,
+		[int]$PollMs = $script:StageReadyPollMs
+	)
+
+	$timer = [System.Diagnostics.Stopwatch]::StartNew()
+	$hadStageLock = $false
+
+	while ($true) {
+		$paths = @(Get-StagedPathList -CommandName $CommandName)
+		if ($paths.Count -gt 0) {
+			if ($timer.ElapsedMilliseconds -gt 0) {
+				Write-RunLog ("Stage wait resolved | Command={0} | WaitMs={1} | Items={2} | HadLock={3}" -f $CommandName, $timer.ElapsedMilliseconds, $paths.Count, $hadStageLock)
+			}
+			return $paths
+		}
+
+		$lockExists = Test-Path -LiteralPath $script:StageLockPath
+		if ($lockExists) { $hadStageLock = $true }
+
+		if ($timer.ElapsedMilliseconds -ge $MaxWaitMs) {
+			if ($hadStageLock -or $lockExists) {
+				Write-RunLog ("Stage wait timeout | Command={0} | WaitMs={1} | HadLock={2}" -f $CommandName, $timer.ElapsedMilliseconds, $hadStageLock)
+			}
+			return @()
+		}
+
+		# Fast-fail when nothing indicates active staging (no lock seen at all).
+		if ((-not $lockExists) -and (-not $hadStageLock) -and ($timer.ElapsedMilliseconds -ge $FastFailMs)) {
+			return @()
+		}
+
+		Start-Sleep -Milliseconds $PollMs
+	}
 }
 
 function Get-DriveLetterFromPath {
@@ -1075,7 +1118,7 @@ try {
 	}
 
 	# Read staged files/folders from registry list.
-	$array = Get-StagedPathList -CommandName $command
+	$array = Get-StagedPathListWithWait -CommandName $command
 	$arrayLength = @($array).Count
 	if ($arrayLength -eq 0) {
 		NoListAvailable
