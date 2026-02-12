@@ -235,6 +235,12 @@ try {
 
     $saveResult = Save-StagedPaths -CommandName $command -Paths $selectedPaths
     Write-StageLog ("OK | mode={0} | anchor='{1}' | selected={2} | total={3} | reused_session={4}" -f $command, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.ReusedSession)
+
+    if ($selectedPaths.Count -gt 1) {
+        # Signal multi-item stage so VBS can suppress burst duplicate invokes.
+        exit 10
+    }
+    exit 0
 }
 finally {
     if ($hasLock) {
