@@ -17,6 +17,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 - `RoboCopy_Silent.vbs`
   - Hidden launcher for staging (`Robo-Copy` / `Robo-Cut`).
   - Calls `rcopySingle.ps1` with `pwsh.exe -NoProfile`.
+  - Uses a short-lived lock file (`state\stage.lock`) so only one hidden staging `pwsh` starts per multi-select burst.
 - `rcopySingle.ps1`
   - Captures full Explorer selection from the active parent window (files + folders) with short retries.
   - Uses a named mutex (`Global\MoveTo_RoboCopy_Stage`) to serialize concurrent staging writes.
@@ -37,7 +38,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 ## Execution Flow
 
 1. Right-click selected source files/folders -> `Robo-Copy` or `Robo-Cut`.
-2. `RoboCopy_Silent.vbs` runs `rcopySingle.ps1` hidden.
+2. `RoboCopy_Silent.vbs` acquires staging lock and runs one hidden `rcopySingle.ps1` instance.
 3. `rcopySingle.ps1` writes source path into:
    - `HKCU:\RCWM\rc` for copy
    - `HKCU:\RCWM\mv` for move
