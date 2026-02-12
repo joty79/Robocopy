@@ -11,10 +11,20 @@ function New-DefaultConfig {
         benchmark      = $false
         hold_window    = $false
         debug_mode     = $false
+        stage_backend  = "file"
         default_mt     = $null
         extra_args     = @()
         routes         = @()
     }
+}
+
+function Normalize-StageBackend {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $normalized = $Value.Trim().ToLowerInvariant()
+    if ($normalized -in @("file", "registry")) { return $normalized }
+    return $null
 }
 
 function Load-Config {
@@ -36,6 +46,10 @@ function Load-Config {
             if ($null -ne $obj.benchmark) { $cfg.benchmark = [bool]$obj.benchmark }
             if ($null -ne $obj.hold_window) { $cfg.hold_window = [bool]$obj.hold_window }
             if ($null -ne $obj.debug_mode) { $cfg.debug_mode = [bool]$obj.debug_mode }
+            if ($null -ne $obj.stage_backend) {
+                $backend = Normalize-StageBackend -Value ([string]$obj.stage_backend)
+                if ($backend) { $cfg.stage_backend = $backend }
+            }
             if ($null -ne $obj.default_mt -and "$($obj.default_mt)" -match '^\d+$') {
                 $mt = [int]$obj.default_mt
                 if ($mt -ge 1 -and $mt -le 128) { $cfg.default_mt = $mt }
@@ -84,6 +98,7 @@ function Show-Config {
     Write-Host "  benchmark     : $($Config.benchmark)"
     Write-Host "  hold_window   : $($Config.hold_window)"
     Write-Host "  debug_mode    : $($Config.debug_mode)"
+    Write-Host "  stage_backend : $($Config.stage_backend)"
     Write-Host "  default_mt: $($Config.default_mt)"
     Write-Host "  extra_args: $((@($Config.extra_args) -join ' '))"
     Write-Host "  routes:"
@@ -133,6 +148,13 @@ function Show-Config {
             Default     = [string]$defaults.debug_mode
             ControlledBy= "Menu 7"
             Effect      = "Enable detailed robocopy debug log + console echo"
+        },
+        [pscustomobject]@{
+            Setting     = "stage_backend"
+            Current     = [string]$Config.stage_backend
+            Default     = [string]$defaults.stage_backend
+            ControlledBy= "Menu 8"
+            Effect      = "Staging storage backend (file/registry)"
         },
         [pscustomobject]@{
             Setting     = "default_mt"
@@ -210,8 +232,9 @@ while ($true) {
     Write-Host "5. Set extra robocopy args"
     Write-Host "6. Toggle benchmark mode (ON = benchmark+hold window)"
     Write-Host "7. Toggle debug mode (ON = /TEE + detailed robocopy log)"
-    Write-Host "8. Save and exit"
-    Write-Host "9. Exit without saving"
+    Write-Host "8. Toggle stage backend (file/registry)"
+    Write-Host "9. Save and exit"
+    Write-Host "10. Exit without saving"
     $choice = Read-Host "Select option"
 
     switch ($choice) {
@@ -321,11 +344,21 @@ while ($true) {
             }
         }
         "8" {
+            if ($config.stage_backend -eq "registry") {
+                $config.stage_backend = "file"
+            }
+            else {
+                $config.stage_backend = "registry"
+            }
+            Write-Host "stage_backend = $($config.stage_backend)" -ForegroundColor Green
+            Write-Host "Tip: env RCWM_STAGE_BACKEND overrides config per-process." -ForegroundColor DarkCyan
+        }
+        "9" {
             Save-Config -Config $config -Path $configPath
             Write-Host "Saved to $configPath" -ForegroundColor Cyan
             return
         }
-        "9" {
+        "10" {
             Write-Host "Exit without saving." -ForegroundColor Yellow
             return
         }

@@ -1,4 +1,4 @@
-#Robocopy paste engine for staged files/folders from HKCU:\RCWM
+#Robocopy paste engine for staged files/folders (file or registry backend)
 
 #flags used when robocopying (overwrites files):
 
@@ -26,8 +26,10 @@ $process = Get-Process -Id $pid
 $process.PriorityClass = 'High'
 $script:ThreadDecisionCache = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
 $script:StageStateDir = Join-Path $PSScriptRoot "state"
+$script:StageFilesDir = Join-Path $script:StageStateDir "staging"
 $script:StageLockPath = Join-Path $script:StageStateDir "stage.lock"
 $script:StageBurstPath = Join-Path $script:StageStateDir "stage.burst"
+$script:StageBackendDefault = "file"
 $script:StageLockStaleSeconds = 20
 $script:StageResolveTimeoutMs = 4000
 $script:StageResolveMaxTimeoutMs = 12000
@@ -129,7 +131,39 @@ function Convert-ToUtcDateOrNull {
 	}
 }
 
-function Get-StagedSnapshot {
+function Normalize-StageBackend {
+	param([string]$Value)
+
+	if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+	$normalized = $Value.Trim().ToLowerInvariant()
+	if ($normalized -in @("file", "registry")) { return $normalized }
+	return $null
+}
+
+function Get-StageBackend {
+	param([object]$Config)
+
+	$backend = Normalize-StageBackend -Value $script:StageBackendDefault
+	if (-not $backend) { $backend = "file" }
+
+	$envBackend = Normalize-StageBackend -Value $env:RCWM_STAGE_BACKEND
+	if ($envBackend) { return $envBackend }
+
+	if ($Config -and $Config.PSObject.Properties.Name -contains "stage_backend") {
+		$configBackend = Normalize-StageBackend -Value ([string]$Config.stage_backend)
+		if ($configBackend) { return $configBackend }
+	}
+
+	return $backend
+}
+
+function Get-StagedFilePath {
+	param([ValidateSet("rc", "mv")][string]$CommandName)
+
+	return (Join-Path $script:StageFilesDir ("{0}.stage.json" -f $CommandName))
+}
+
+function Get-StagedSnapshotFromRegistry {
 	param([ValidateSet("rc", "mv")][string]$CommandName)
 
 	$regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
@@ -188,7 +222,8 @@ function Get-StagedSnapshot {
 
 	return [pscustomobject]@{
 		CommandName   = $CommandName
-		RegistryPath  = $regPath
+		Backend       = "registry"
+		StoragePath   = $regPath
 		Paths         = $uniquePaths
 		ActualCount   = $actualCount
 		ExpectedCount = $expectedCount
@@ -200,9 +235,87 @@ function Get-StagedSnapshot {
 	}
 }
 
+function Get-StagedSnapshotFromFile {
+	param([ValidateSet("rc", "mv")][string]$CommandName)
+
+	$stageFile = Get-StagedFilePath -CommandName $CommandName
+	if (-not (Test-Path -LiteralPath $stageFile)) { return $null }
+
+	try {
+		$raw = Get-Content -Raw -LiteralPath $stageFile -ErrorAction Stop
+		if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+		$data = $raw | ConvertFrom-Json -ErrorAction Stop
+
+		$paths = @()
+		if ($data.items) {
+			$paths = @($data.items | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+		}
+		$existingPaths = @($paths | Where-Object { Test-Path -LiteralPath $_ })
+
+		$uniquePaths = @(Get-UniquePathList -InputPaths $existingPaths)
+		$actualCount = @($uniquePaths).Count
+		$expectedCount = -1
+		$hasExpected = $false
+		if ($data.PSObject.Properties.Name -contains "expected_count") {
+			$hasExpected = $true
+			try { $expectedCount = [int]$data.expected_count } catch { $expectedCount = -1 }
+		}
+
+		$readyFlag = $false
+		if ($data.PSObject.Properties.Name -contains "ready") {
+			try { $readyFlag = [bool]$data.ready } catch { $readyFlag = $false }
+		}
+		else {
+			$readyFlag = ($actualCount -gt 0)
+		}
+
+		$lastStageUtc = Convert-ToUtcDateOrNull -Text ([string]$data.last_stage_utc)
+		$sessionId = ""
+		if ($data.PSObject.Properties.Name -contains "session_id") {
+			$sessionId = [string]$data.session_id
+		}
+
+		$isReady = $readyFlag -and ($actualCount -gt 0)
+		if ($hasExpected -and $expectedCount -ge 0) {
+			$isReady = $isReady -and ($actualCount -eq $expectedCount)
+		}
+
+		return [pscustomobject]@{
+			CommandName   = $CommandName
+			Backend       = "file"
+			StoragePath   = $stageFile
+			Paths         = $uniquePaths
+			ActualCount   = $actualCount
+			ExpectedCount = $expectedCount
+			HasExpected   = $hasExpected
+			ReadyFlag     = $readyFlag
+			IsReady       = $isReady
+			LastStageUtc  = $lastStageUtc
+			SessionId     = $sessionId
+		}
+	}
+	catch {
+		return $null
+	}
+}
+
+function Get-StagedSnapshot {
+	param(
+		[ValidateSet("rc", "mv")][string]$CommandName,
+		[ValidateSet("file", "registry")][string]$Backend = "file"
+	)
+
+	if ($Backend -eq "registry") {
+		return (Get-StagedSnapshotFromRegistry -CommandName $CommandName)
+	}
+
+	return (Get-StagedSnapshotFromFile -CommandName $CommandName)
+}
+
 function Resolve-StagedPayload {
 	param(
 		[string]$RequestedCommand = "auto",
+		[ValidateSet("file", "registry")][string]$Backend = "file",
 		[int]$TimeoutMs = $script:StageResolveTimeoutMs,
 		[int]$PollMs = $script:StageResolvePollMs
 	)
@@ -216,7 +329,7 @@ function Resolve-StagedPayload {
 	while ($true) {
 		$snapshots = @()
 		foreach ($cmd in $commands) {
-			$snapshot = Get-StagedSnapshot -CommandName $cmd
+			$snapshot = Get-StagedSnapshot -CommandName $cmd -Backend $Backend
 			if ($snapshot) {
 				$snapshots += $snapshot
 			}
@@ -257,7 +370,7 @@ function Resolve-StagedPayload {
 					Write-RunLog ("Stage resolve timeout | Requested={0} | WaitMs={1} | Command={2} | Ready={3} | Expected={4} | Actual={5} | Session={6} | LockActive={7} | BurstActive={8}" -f $requested, $elapsed, $latest.CommandName, $latest.ReadyFlag, $latest.ExpectedCount, $latest.ActualCount, $latest.SessionId, $lockActive, $burstActive)
 				}
 				else {
-					Write-RunLog ("Stage resolve timeout | Requested={0} | WaitMs={1} | No registry snapshot found | LockActive={2} | BurstActive={3}" -f $requested, $elapsed, $lockActive, $burstActive)
+					Write-RunLog ("Stage resolve timeout | Requested={0} | Backend={1} | WaitMs={2} | No stage snapshot found | LockActive={3} | BurstActive={4}" -f $requested, $Backend, $elapsed, $lockActive, $burstActive)
 				}
 				return $null
 			}
@@ -278,6 +391,34 @@ function Clear-StagedRegistryKey {
 		New-Item -Path $regPath -Force | Out-Null
 	}
 	catch { }
+}
+
+function Clear-StagedFile {
+	param([ValidateSet("rc", "mv")][string]$CommandName)
+
+	$stageFile = Get-StagedFilePath -CommandName $CommandName
+	try {
+		if (Test-Path -LiteralPath $stageFile) {
+			Remove-Item -LiteralPath $stageFile -Force -ErrorAction SilentlyContinue
+		}
+	}
+	catch { }
+}
+
+function Clear-StagedPayload {
+	param(
+		[ValidateSet("rc", "mv")][string]$CommandName,
+		[ValidateSet("file", "registry")][string]$Backend = "file"
+	)
+
+	if ($Backend -eq "registry") {
+		Clear-StagedRegistryKey -CommandName $CommandName
+		return
+	}
+
+	Clear-StagedFile -CommandName $CommandName
+	# Compatibility cleanup for VBS burst-suppression metadata mirror.
+	Clear-StagedRegistryKey -CommandName $CommandName
 }
 
 function Get-DriveLetterFromPath {
@@ -390,6 +531,7 @@ function Get-TuneConfig {
 		benchmark      = $false
 		hold_window    = $false
 		debug_mode     = $false
+		stage_backend  = "file"
 		default_mt     = $null
 		extra_args     = @()
 		routes         = @()
@@ -422,6 +564,10 @@ function Get-TuneConfig {
 			}
 			if ($null -ne $data.debug_mode) {
 				$config.debug_mode = [bool]$data.debug_mode
+			}
+			if ($null -ne $data.stage_backend) {
+				$cfgBackend = Normalize-StageBackend -Value ([string]$data.stage_backend)
+				if ($cfgBackend) { $config.stage_backend = $cfgBackend }
 			}
 
 			if ($null -ne $data.default_mt -and "$($data.default_mt)" -match '^\d+$') {
@@ -1172,10 +1318,11 @@ $script:RunLogPath = "$PSScriptRoot\run_log.txt"
 $script:RobocopyDebugLogPath = "$PSScriptRoot\robocopy_debug.log"
 $tuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
 $script:RoboTuneConfig = Get-TuneConfig -ConfigPath $tuneConfigPath
+$script:StageBackend = Get-StageBackend -Config $script:RoboTuneConfig
 $script:RunSettings = Get-RunSettings -Config $script:RoboTuneConfig
 Write-RunLog "===== START ====="
 Write-RunLog ("Config path: {0}" -f $tuneConfigPath)
-Write-RunLog ("BenchmarkMode={0} | BenchmarkOutput={1} | HoldWindow={2} | DebugMode={3}" -f $script:RunSettings.BenchmarkMode, $script:RunSettings.BenchmarkOutput, $script:RunSettings.HoldWindow, $script:RunSettings.DebugMode)
+Write-RunLog ("BenchmarkMode={0} | BenchmarkOutput={1} | HoldWindow={2} | DebugMode={3} | StageBackend={4}" -f $script:RunSettings.BenchmarkMode, $script:RunSettings.BenchmarkOutput, $script:RunSettings.HoldWindow, $script:RunSettings.DebugMode, $script:StageBackend)
 if ($script:RunSettings.BenchmarkMode) {
 	Write-Host "Benchmark mode is ON (window will stay open at end)." -ForegroundColor Cyan
 	Write-Host ("Run log: {0}" -f $script:RunLogPath) -ForegroundColor DarkCyan
@@ -1217,14 +1364,14 @@ try {
 
 	$pasteDirectoryDisplay = "'" + $pasteIntoDirectory + "'"
 
-	$resolvedSnapshot = Resolve-StagedPayload -RequestedCommand $requestedCommand
+	$resolvedSnapshot = Resolve-StagedPayload -RequestedCommand $requestedCommand -Backend $script:StageBackend
 	if ($resolvedSnapshot) {
 		$command = $resolvedSnapshot.CommandName
-		Write-RunLog ("Stage resolved | Requested={0} | Command={1} | Expected={2} | Actual={3} | Session={4}" -f $requestedCommand, $resolvedSnapshot.CommandName, $resolvedSnapshot.ExpectedCount, $resolvedSnapshot.ActualCount, $resolvedSnapshot.SessionId)
+		Write-RunLog ("Stage resolved | Requested={0} | Backend={1} | Command={2} | Expected={3} | Actual={4} | Session={5}" -f $requestedCommand, $script:StageBackend, $resolvedSnapshot.CommandName, $resolvedSnapshot.ExpectedCount, $resolvedSnapshot.ActualCount, $resolvedSnapshot.SessionId)
 	}
 	else {
 		$command = if ($requestedCommand -eq "mv") { "mv" } else { "rc" }
-		Write-RunLog ("Stage unresolved | Requested={0} | FallbackCommand={1}" -f $requestedCommand, $command)
+		Write-RunLog ("Stage unresolved | Requested={0} | Backend={1} | FallbackCommand={2}" -f $requestedCommand, $script:StageBackend, $command)
 	}
 	$mode = if ($requestedMode -in @("m", "s")) { $requestedMode } else { "s" }
 
@@ -1250,7 +1397,7 @@ try {
 		$array = @($resolvedSnapshot.Paths)
 	}
 	else {
-		$fallbackSnapshot = Get-StagedSnapshot -CommandName $command
+		$fallbackSnapshot = Get-StagedSnapshot -CommandName $command -Backend $script:StageBackend
 		if ($fallbackSnapshot -and $fallbackSnapshot.IsReady) {
 			$array = @($fallbackSnapshot.Paths)
 		}
@@ -1305,7 +1452,7 @@ try {
 							}	
 
 							{ "y", "yes" -contains $_ } {
-								Clear-StagedRegistryKey -CommandName $command
+								Clear-StagedPayload -CommandName $command -Backend $script:StageBackend
 								Remove-StageBurstMarker
 								Write-Host "List deleted."
 								Start-Sleep 2
@@ -1422,7 +1569,7 @@ try {
 						}
 						"Escape" {
 							Write-Host "Aborted $string3 the remaining items."
-							Clear-StagedRegistryKey -CommandName $command
+							Clear-StagedPayload -CommandName $command -Backend $script:StageBackend
 							Remove-StageBurstMarker
 							Start-Sleep 2
 							Exit-Script -Code 2 -Reason "User pressed Escape in merge prompt."
@@ -1462,7 +1609,7 @@ try {
 			Write-RunLog ("Session benchmark | Ops={0} | Failed={1} | Files={2} | Bytes={3} | Time={4}s | Throughput={5}" -f $completedOps.Count, $failedOps, $totalFiles, $totalBytes, $totalSeconds, $aggregateThroughput)
 		}
 
-		Clear-StagedRegistryKey -CommandName $command
+		Clear-StagedPayload -CommandName $command -Backend $script:StageBackend
 		Remove-StageBurstMarker
 		Write-Output ""
 		Write-Host "Finished!" -ForegroundColor Blue

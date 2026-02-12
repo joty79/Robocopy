@@ -13,6 +13,9 @@ $script:SelectionRetryCount = 18
 $script:SelectionRetryDelayMs = 85
 $script:SelectionStableHits = 3
 $script:StageMutexName = "Global\MoveTo_RoboCopy_Stage"
+$script:StageStateDir = Join-Path $PSScriptRoot "state"
+$script:StageFilesDir = Join-Path $script:StageStateDir "staging"
+$script:StageBackendDefault = "file"
 
 function Write-StageLog {
     param([string]$Message)
@@ -33,6 +36,61 @@ function Resolve-NormalPath {
     catch {
         return $null
     }
+}
+
+function Ensure-StageStateDirectories {
+    try {
+        if (-not (Test-Path -LiteralPath $script:StageStateDir)) {
+            New-Item -ItemType Directory -Path $script:StageStateDir -Force | Out-Null
+        }
+        if (-not (Test-Path -LiteralPath $script:StageFilesDir)) {
+            New-Item -ItemType Directory -Path $script:StageFilesDir -Force | Out-Null
+        }
+    }
+    catch { }
+}
+
+function Normalize-StageBackend {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $normalized = $Value.Trim().ToLowerInvariant()
+    if ($normalized -in @("file", "registry")) { return $normalized }
+    return $null
+}
+
+function Get-StageBackend {
+    param([string]$ConfigPath)
+
+    $backend = Normalize-StageBackend -Value $script:StageBackendDefault
+    if (-not $backend) { $backend = "file" }
+
+    $envBackend = Normalize-StageBackend -Value $env:RCWM_STAGE_BACKEND
+    if ($envBackend) { return $envBackend }
+
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        return $backend
+    }
+
+    try {
+        $raw = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop
+        if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            $data = $raw | ConvertFrom-Json -ErrorAction Stop
+            $cfgBackend = Normalize-StageBackend -Value ([string]$data.stage_backend)
+            if ($cfgBackend) {
+                return $cfgBackend
+            }
+        }
+    }
+    catch { }
+
+    return $backend
+}
+
+function Get-StagedJsonPath {
+    param([ValidateSet("rc", "mv")][string]$CommandName)
+
+    return (Join-Path $script:StageFilesDir ("{0}.stage.json" -f $CommandName))
 }
 
 function Get-AnchorParentPath {
@@ -171,15 +229,80 @@ function Clear-StagedRegistryKey {
     catch { }
 }
 
+function Save-StagedPathsToRegistry {
+    param(
+        [ValidateSet("rc", "mv")]
+        [string]$CommandName,
+        [string[]]$Paths,
+        [string]$AnchorParentNormalized,
+        [string]$SessionId,
+        [string]$LastStageUtc,
+        [int]$ExpectedCount
+    )
+
+    $regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
+    $uniquePaths = @($Paths)
+
+    Clear-StagedRegistryKey -RegistryPath $regPath
+
+    New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 0 -Force | Out-Null
+    New-ItemProperty -LiteralPath $regPath -Name "__expected_count" -PropertyType DWord -Value $ExpectedCount -Force | Out-Null
+    New-ItemProperty -LiteralPath $regPath -Name "__session_id" -PropertyType String -Value $SessionId -Force | Out-Null
+    New-ItemProperty -LiteralPath $regPath -Name "__last_stage_utc" -PropertyType String -Value $LastStageUtc -Force | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($anchorParentNormalized)) {
+        New-ItemProperty -LiteralPath $regPath -Name "__anchor_parent" -PropertyType String -Value ($anchorParentNormalized.ToLowerInvariant()) -Force | Out-Null
+    }
+
+    for ($i = 0; $i -lt $ExpectedCount; $i++) {
+        $valueName = "item_{0:D6}" -f ($i + 1)
+        New-ItemProperty -LiteralPath $regPath -Name $valueName -PropertyType String -Value $uniquePaths[$i] -Force | Out-Null
+    }
+
+    New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 1 -Force | Out-Null
+}
+
+function Save-StagedPathsToFile {
+    param(
+        [ValidateSet("rc", "mv")]
+        [string]$CommandName,
+        [string[]]$Paths,
+        [string]$AnchorParentNormalized,
+        [string]$SessionId,
+        [string]$LastStageUtc,
+        [int]$ExpectedCount
+    )
+
+    Ensure-StageStateDirectories
+
+    $stagedFile = Get-StagedJsonPath -CommandName $CommandName
+    $tempFile = "{0}.{1}.tmp" -f $stagedFile, ([Guid]::NewGuid().ToString("N"))
+    $payload = [ordered]@{
+        version        = 1
+        backend        = "file"
+        command        = $CommandName
+        ready          = $true
+        expected_count = $ExpectedCount
+        session_id     = $SessionId
+        last_stage_utc = $LastStageUtc
+        anchor_parent  = if ([string]::IsNullOrWhiteSpace($AnchorParentNormalized)) { $null } else { $AnchorParentNormalized.ToLowerInvariant() }
+        items          = @($Paths)
+    }
+
+    $json = $payload | ConvertTo-Json -Depth 5
+    Set-Content -LiteralPath $tempFile -Value $json -Encoding UTF8
+    Move-Item -LiteralPath $tempFile -Destination $stagedFile -Force
+}
+
 function Save-StagedPaths {
     param(
         [ValidateSet("rc", "mv")]
         [string]$CommandName,
         [string[]]$Paths,
-        [string]$AnchorParentPath
+        [string]$AnchorParentPath,
+        [ValidateSet("file", "registry")]
+        [string]$Backend = "file"
     )
 
-    $regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
     $pathList = if ($null -eq $Paths) { @() } elseif ($Paths -is [string]) { @($Paths) } else { @($Paths) }
     $uniquePaths = @(Get-UniqueExistingPaths -Candidates ([string[]]$pathList))
     $sessionId = [Guid]::NewGuid().ToString("N")
@@ -187,24 +310,17 @@ function Save-StagedPaths {
     $lastStageUtc = (Get-Date).ToUniversalTime().ToString("o")
     $anchorParentNormalized = Resolve-NormalPath -PathValue $AnchorParentPath
 
-    Clear-StagedRegistryKey -RegistryPath $regPath
-
-    New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 0 -Force | Out-Null
-    New-ItemProperty -LiteralPath $regPath -Name "__expected_count" -PropertyType DWord -Value $expectedCount -Force | Out-Null
-    New-ItemProperty -LiteralPath $regPath -Name "__session_id" -PropertyType String -Value $sessionId -Force | Out-Null
-    New-ItemProperty -LiteralPath $regPath -Name "__last_stage_utc" -PropertyType String -Value $lastStageUtc -Force | Out-Null
-    if (-not [string]::IsNullOrWhiteSpace($anchorParentNormalized)) {
-        New-ItemProperty -LiteralPath $regPath -Name "__anchor_parent" -PropertyType String -Value ($anchorParentNormalized.ToLowerInvariant()) -Force | Out-Null
+    if ($Backend -eq "registry") {
+        Save-StagedPathsToRegistry -CommandName $CommandName -Paths $uniquePaths -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
     }
-
-    for ($i = 0; $i -lt $expectedCount; $i++) {
-        $valueName = "item_{0:D6}" -f ($i + 1)
-        New-ItemProperty -LiteralPath $regPath -Name $valueName -PropertyType String -Value $uniquePaths[$i] -Force | Out-Null
+    else {
+        Save-StagedPathsToFile -CommandName $CommandName -Paths $uniquePaths -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
+        # Keep registry metadata in sync for VBS burst-suppression checks.
+        Save-StagedPathsToRegistry -CommandName $CommandName -Paths $uniquePaths -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
     }
-
-    New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 1 -Force | Out-Null
 
     return [pscustomobject]@{
+        Backend       = $Backend
         SessionId     = $sessionId
         TotalItems    = $expectedCount
         LastStageUtc  = $lastStageUtc
@@ -212,6 +328,7 @@ function Save-StagedPaths {
 }
 
 $command = if ($Mode -and $Mode.ToLowerInvariant() -eq "mv") { "mv" } else { "rc" }
+$script:StageBackend = Get-StageBackend -ConfigPath (Join-Path $PSScriptRoot "RoboTune.json")
 $anchorResolved = Resolve-NormalPath -PathValue $AnchorPath
 if (-not $anchorResolved) {
     Write-StageLog ("ERROR | mode={0} | unresolved anchor='{1}'" -f $command, $AnchorPath)
@@ -234,8 +351,8 @@ try {
         $selectedPaths = @($anchorResolved)
     }
 
-    $saveResult = Save-StagedPaths -CommandName $command -Paths $selectedPaths -AnchorParentPath $parentPath
-    Write-StageLog ("OK | mode={0} | anchor='{1}' | selected={2} | total={3} | expected={4} | session={5}" -f $command, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.TotalItems, $saveResult.SessionId)
+    $saveResult = Save-StagedPaths -CommandName $command -Paths $selectedPaths -AnchorParentPath $parentPath -Backend $script:StageBackend
+    Write-StageLog ("OK | mode={0} | backend={1} | anchor='{2}' | selected={3} | total={4} | expected={5} | session={6}" -f $command, $saveResult.Backend, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.TotalItems, $saveResult.SessionId)
 
     if ($selectedPaths.Count -gt 1) {
         exit 10
