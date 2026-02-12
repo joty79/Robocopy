@@ -9,9 +9,10 @@ param(
 [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
 
 $script:StageLogPath = Join-Path $PSScriptRoot "stage_log.txt"
-$script:SessionWindowSeconds = 3
-$script:SelectionRetryCount = 12
-$script:SelectionRetryDelayMs = 100
+$script:SelectionRetryCount = 18
+$script:SelectionRetryDelayMs = 85
+$script:SelectionStableHits = 3
+$script:StageMutexName = "Global\MoveTo_RoboCopy_Stage"
 
 function Write-StageLog {
     param([string]$Message)
@@ -116,77 +117,97 @@ function Get-UniqueExistingPaths {
     return [string[]]$out.ToArray()
 }
 
-function Get-ExistingStagedPaths {
-    param([string]$RegistryPath)
+function Get-BestSelectionFromParent {
+    param([string]$ParentPath)
 
-    if (-not (Test-Path -LiteralPath $RegistryPath)) { return @() }
+    if ([string]::IsNullOrWhiteSpace($ParentPath)) { return @() }
 
-    $item = Get-ItemProperty -LiteralPath $RegistryPath -ErrorAction SilentlyContinue
-    if (-not $item) { return @() }
+    $bestPaths = @()
+    $bestSignature = ""
+    $stableHits = 0
 
-    $props = @($item.PSObject.Properties | Where-Object {
-        $_.Name -notmatch '^PS' -and $_.Name -ne '(default)' -and -not $_.Name.StartsWith('__')
-    } | Sort-Object Name)
+    for ($attempt = 1; $attempt -le $script:SelectionRetryCount; $attempt++) {
+        $selectionCandidates = Get-ExplorerSelectionFromParent -ParentPath $ParentPath
+        $currentPaths = @(Get-UniqueExistingPaths -Candidates $selectionCandidates)
+        $currentSignature = [string]::Join("`n", $currentPaths)
 
-    $paths = New-Object System.Collections.Generic.List[string]
-    foreach ($prop in $props) {
-        $candidate = [string]$prop.Value
-        if ([string]::IsNullOrWhiteSpace($candidate)) {
-            $candidate = [string]$prop.Name
+        if ($currentPaths.Count -gt $bestPaths.Count) {
+            $bestPaths = $currentPaths
+            $bestSignature = $currentSignature
+            $stableHits = 1
         }
-        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-        if (-not (Test-Path -LiteralPath $candidate)) { continue }
-        [void]$paths.Add($candidate)
+        elseif ($currentPaths.Count -eq $bestPaths.Count -and $currentPaths.Count -gt 0) {
+            if ($currentSignature -eq $bestSignature) {
+                $stableHits++
+            }
+            else {
+                $bestPaths = $currentPaths
+                $bestSignature = $currentSignature
+                $stableHits = 1
+            }
+        }
+
+        if ($bestPaths.Count -gt 1 -and $stableHits -ge $script:SelectionStableHits) {
+            break
+        }
+
+        if ($attempt -lt $script:SelectionRetryCount) {
+            Start-Sleep -Milliseconds $script:SelectionRetryDelayMs
+        }
     }
 
-    return Get-UniqueExistingPaths -Candidates ([string[]]$paths.ToArray())
+    return @($bestPaths)
+}
+
+function Clear-StagedRegistryKey {
+    param([string]$RegistryPath)
+
+    try {
+        if (Test-Path -LiteralPath $RegistryPath) {
+            Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        New-Item -Path $RegistryPath -Force | Out-Null
+    }
+    catch { }
 }
 
 function Save-StagedPaths {
     param(
         [ValidateSet("rc", "mv")]
         [string]$CommandName,
-        [string[]]$Paths
+        [string[]]$Paths,
+        [string]$AnchorParentPath
     )
 
     $regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
     $pathList = if ($null -eq $Paths) { @() } elseif ($Paths -is [string]) { @($Paths) } else { @($Paths) }
-    if (-not (Test-Path -LiteralPath $regPath)) {
-        New-Item -Path $regPath -Force | Out-Null
+    $uniquePaths = @(Get-UniqueExistingPaths -Candidates ([string[]]$pathList))
+    $sessionId = [Guid]::NewGuid().ToString("N")
+    $expectedCount = @($uniquePaths).Count
+    $lastStageUtc = (Get-Date).ToUniversalTime().ToString("o")
+    $anchorParentNormalized = Resolve-NormalPath -PathValue $AnchorParentPath
+
+    Clear-StagedRegistryKey -RegistryPath $regPath
+
+    New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 0 -Force | Out-Null
+    New-ItemProperty -LiteralPath $regPath -Name "__expected_count" -PropertyType DWord -Value $expectedCount -Force | Out-Null
+    New-ItemProperty -LiteralPath $regPath -Name "__session_id" -PropertyType String -Value $sessionId -Force | Out-Null
+    New-ItemProperty -LiteralPath $regPath -Name "__last_stage_utc" -PropertyType String -Value $lastStageUtc -Force | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($anchorParentNormalized)) {
+        New-ItemProperty -LiteralPath $regPath -Name "__anchor_parent" -PropertyType String -Value ($anchorParentNormalized.ToLowerInvariant()) -Force | Out-Null
     }
 
-    $existing = @()
-    $reuseSession = $false
-
-    $item = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
-    if ($item -and $item.PSObject.Properties.Name -contains "__last_stage_utc") {
-        $lastText = [string]$item.__last_stage_utc
-        try {
-            $lastUtc = [DateTime]::Parse($lastText)
-            $ageSeconds = ((Get-Date).ToUniversalTime() - $lastUtc.ToUniversalTime()).TotalSeconds
-            if ($ageSeconds -ge 0 -and $ageSeconds -le $script:SessionWindowSeconds) {
-                $reuseSession = $true
-            }
-        }
-        catch { }
-    }
-
-    if ($reuseSession) {
-        $existing = @(Get-ExistingStagedPaths -RegistryPath $regPath)
-    }
-
-    $combined = @(Get-UniqueExistingPaths -Candidates ([string[]](@($existing) + @($pathList))))
-
-    Remove-ItemProperty -LiteralPath $regPath -Name * -ErrorAction SilentlyContinue
-    for ($i = 0; $i -lt @($combined).Count; $i++) {
+    for ($i = 0; $i -lt $expectedCount; $i++) {
         $valueName = "item_{0:D6}" -f ($i + 1)
-        New-ItemProperty -LiteralPath $regPath -Name $valueName -PropertyType String -Value $combined[$i] -Force | Out-Null
+        New-ItemProperty -LiteralPath $regPath -Name $valueName -PropertyType String -Value $uniquePaths[$i] -Force | Out-Null
     }
-    New-ItemProperty -LiteralPath $regPath -Name "__last_stage_utc" -PropertyType String -Value ((Get-Date).ToUniversalTime().ToString("o")) -Force | Out-Null
+
+    New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 1 -Force | Out-Null
 
     return [pscustomobject]@{
-        ReusedSession = $reuseSession
-        TotalItems    = @($combined).Count
+        SessionId     = $sessionId
+        TotalItems    = $expectedCount
+        LastStageUtc  = $lastStageUtc
     }
 }
 
@@ -197,7 +218,7 @@ if (-not $anchorResolved) {
     exit 1
 }
 
-$mutex = New-Object System.Threading.Mutex($false, "Global\MoveTo_RoboCopy_Stage")
+$mutex = New-Object System.Threading.Mutex($false, $script:StageMutexName)
 $hasLock = $false
 try {
     $hasLock = $mutex.WaitOne(5000)
@@ -207,37 +228,16 @@ try {
     }
 
     $parentPath = Get-AnchorParentPath -PathValue $anchorResolved
-    $selectedPaths = @()
+    $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath)
 
-    if ($parentPath) {
-        for ($attempt = 1; $attempt -le $script:SelectionRetryCount; $attempt++) {
-            $selectionCandidates = Get-ExplorerSelectionFromParent -ParentPath $parentPath
-            $selectedPaths = @(Get-UniqueExistingPaths -Candidates $selectionCandidates)
-
-            if ($selectedPaths.Count -gt 1) { break }
-
-            if ($selectedPaths.Count -eq 1) {
-                $single = $selectedPaths[0]
-                if (-not [string]::Equals($single, $anchorResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    break
-                }
-            }
-
-            if ($attempt -lt $script:SelectionRetryCount) {
-                Start-Sleep -Milliseconds $script:SelectionRetryDelayMs
-            }
-        }
-    }
-
-    if (-not $selectedPaths -or $selectedPaths.Count -eq 0) {
+    if ($selectedPaths.Count -eq 0) {
         $selectedPaths = @($anchorResolved)
     }
 
-    $saveResult = Save-StagedPaths -CommandName $command -Paths $selectedPaths
-    Write-StageLog ("OK | mode={0} | anchor='{1}' | selected={2} | total={3} | reused_session={4}" -f $command, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.ReusedSession)
+    $saveResult = Save-StagedPaths -CommandName $command -Paths $selectedPaths -AnchorParentPath $parentPath
+    Write-StageLog ("OK | mode={0} | anchor='{1}' | selected={2} | total={3} | expected={4} | session={5}" -f $command, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.TotalItems, $saveResult.SessionId)
 
     if ($selectedPaths.Count -gt 1) {
-        # Signal multi-item stage so VBS can suppress burst duplicate invokes.
         exit 10
     }
     exit 0

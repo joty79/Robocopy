@@ -6,8 +6,10 @@
 Option Explicit
 
 Const SCRIPT_ROOT = "D:\Users\joty79\scripts\Robocopy"
-Const STALE_LOCK_SECONDS = 120
-Const BURST_SUPPRESS_SECONDS = 6
+Const STALE_LOCK_SECONDS = 20
+Const BURST_SUPPRESS_SECONDS = 2
+Const LOCK_RETRY_COUNT = 40
+Const LOCK_RETRY_DELAY_MS = 75
 Const MULTI_STAGE_EXIT_CODE = 10
 
 Dim STATE_DIR, LOCK_FILE
@@ -113,7 +115,54 @@ Function IsSuppressedBurst(ByVal modeValue, ByVal parentValue)
     lastParent = LCase(Trim(Mid(payload, sepPos + 1)))
 
     If (lastMode = LCase(modeValue)) And (lastParent = parentValue) Then
-        IsSuppressedBurst = True
+        If StageReadyForParent(modeValue, parentValue) Then
+            IsSuppressedBurst = True
+        Else
+            On Error Resume Next
+            If fso.FileExists(BURST_FILE) Then
+                fso.DeleteFile BURST_FILE, True
+            End If
+            On Error GoTo 0
+        End If
+    End If
+
+    On Error GoTo 0
+End Function
+
+Function StageReadyForParent(ByVal modeValue, ByVal parentValue)
+    On Error Resume Next
+    StageReadyForParent = False
+
+    Dim baseKey, readyValue, expectedValue, stageParent
+    baseKey = "HKCU\RCWM\" & modeValue & "\"
+
+    readyValue = CLng(objShell.RegRead(baseKey & "__ready"))
+    If Err.Number <> 0 Then
+        Err.Clear
+        Exit Function
+    End If
+    If readyValue <> 1 Then Exit Function
+
+    expectedValue = 0
+    expectedValue = CLng(objShell.RegRead(baseKey & "__expected_count"))
+    If Err.Number <> 0 Then
+        expectedValue = 0
+        Err.Clear
+    End If
+    If expectedValue <= 1 Then Exit Function
+
+    stageParent = ""
+    stageParent = LCase(CStr(objShell.RegRead(baseKey & "__anchor_parent")))
+    If Err.Number <> 0 Then
+        Err.Clear
+        StageReadyForParent = True
+        Exit Function
+    End If
+
+    If Len(stageParent) = 0 Then
+        StageReadyForParent = True
+    ElseIf stageParent = LCase(parentValue) Then
+        StageReadyForParent = True
     End If
 
     On Error GoTo 0
@@ -134,16 +183,23 @@ End Sub
 
 Function TryAcquireLock()
     On Error Resume Next
-    Dim ts
-    Set ts = fso.CreateTextFile(LOCK_FILE, False, True)
-    If Err.Number = 0 Then
-        ts.WriteLine CStr(Now)
-        ts.Close
-        TryAcquireLock = True
-    Else
-        TryAcquireLock = False
+    Dim attempt, ts
+    TryAcquireLock = False
+
+    For attempt = 1 To LOCK_RETRY_COUNT
+        Set ts = fso.CreateTextFile(LOCK_FILE, False, True)
+        If Err.Number = 0 Then
+            ts.WriteLine CStr(Now)
+            ts.Close
+            TryAcquireLock = True
+            Exit For
+        End If
+
         Err.Clear
-    End If
+        CleanupStaleLock
+        WScript.Sleep LOCK_RETRY_DELAY_MS
+    Next
+
     On Error GoTo 0
 End Function
 
@@ -188,6 +244,12 @@ End If
 
 If Not TryAcquireLock() Then
     ' Another invoke in the same selection burst is already handling staging.
+    WScript.Quit 0
+End If
+
+' Re-check after lock acquire: queued duplicate invokes may have passed pre-lock check.
+If IsSuppressedBurst(mode, anchorParent) Then
+    ReleaseLock
     WScript.Quit 0
 End If
 
