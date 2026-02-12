@@ -1,0 +1,108 @@
+2026-02-12 07:10:36.995 | ===== START =====
+2026-02-12 07:10:36.997 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:10:36.999 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:10:38.373 | Stage resolve ready | Command=rc | WaitMs=1364 | Expected=4944 | Actual=4944 | Session=59d565a64cb844d5bf399cf03a147c91
+2026-02-12 07:10:38.377 | Stage accepted | Command=rc | Session=59d565a64cb844d5bf399cf03a147c91 | Expected=4944 | Actual=4944
+2026-02-12 07:10:39.437 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:10:40.241 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.795s | Files=0 | Bytes=0
+2026-02-12 07:10:40.247 | FastPath wildcard-all-files used | Source='D:\Users\joty79\Desktop\test6' | Count=4944
+2026-02-12 07:10:40.255 | Session benchmark | Ops=1 | Failed=0 | Files=0 | Bytes=0 | Time=1.87s | Throughput=-
+2026-02-12 07:10:40.433 | Finished main flow.
+2026-02-12 07:10:48.033 | ===== START =====
+2026-02-12 07:10:48.034 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:10:48.036 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:10:48.407 | Stage resolve ready | Command=rc | WaitMs=362 | Expected=1938 | Actual=1938 | Session=f58fb3d93a614045a67a00619078c2b6
+2026-02-12 07:10:48.411 | Stage accepted | Command=rc | Session=f58fb3d93a614045a67a00619078c2b6 | Expected=1938 | Actual=1938
+2026-02-12 07:10:49.292 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:10:49.330 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.027s | Files=378 | Bytes=50847894
+2026-02-12 07:10:49.366 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:10:49.388 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.021s | Files=350 | Bytes=18090490
+2026-02-12 07:10:49.415 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:10:49.438 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.022s | Files=359 | Bytes=19308388
+2026-02-12 07:10:49.464 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:10:49.486 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.021s | Files=356 | Bytes=32808275
+2026-02-12 07:10:49.513 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:10:49.539 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.025s | Files=356 | Bytes=27111703
+2026-02-12 07:10:49.580 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:10:49.593 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.013s | Files=139 | Bytes=15120770
+2026-02-12 07:10:49.603 | Session benchmark | Ops=6 | Failed=0 | Files=1938 | Bytes=163287520 | Time=1.183s | Throughput=131.64 MB/s
+2026-02-12 07:10:49.620 | Finished main flow.
+2026-02-12 07:12:10.668 | ===== START =====
+2026-02-12 07:12:10.669 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:12:10.671 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:12:23.125 | Stage resolve timeout | Requested=auto | WaitMs=12444 | HadSignal=True
+2026-02-12 07:12:23.129 | Stage rejected | Command=rc | Ready=True | Expected=2364 | Actual=4928 | Session=74124862893d45ef8149c48bb2d9ccdb
+2026-02-12 07:12:27.163 | Exit requested | Code=1 | Reason=NoListAvailable (mode=s): single source missing.
+2026-02-12 07:12:47.900 | ===== START =====
+2026-02-12 07:12:47.901 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:12:47.903 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:13:00.244 | Stage resolve timeout | Requested=auto | WaitMs=12333 | HadSignal=True
+2026-02-12 07:13:00.249 | Stage rejected | Command=rc | Ready=True | Expected=2298 | Actual=4927 | Session=5fe2d47c42f74b6793be83b6d0242c5e
+2026-02-12 07:13:04.265 | Exit requested | Code=1 | Reason=NoListAvailable (mode=s): single source missing.
+2026-02-12 07:13:13.395 | ===== START =====
+2026-02-12 07:13:13.396 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:13:13.398 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:13:17.434 | Stage rejected | Command=rc | Ready=True | Expected=1 | Actual=4927 | Session=ea8a254cb50843209e30a83717771bfe
+2026-02-12 07:14:20.523 | ===== START =====
+2026-02-12 07:14:20.524 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:14:20.526 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:14:32.978 | Stage resolve timeout | Requested=auto | WaitMs=12442 | HadSignal=True
+2026-02-12 07:14:32.982 | Stage rejected | Command=rc | Ready=True | Expected=1 | Actual=4927 | Session=ea8a254cb50843209e30a83717771bfe
+2026-02-12 07:18:55.977 | ===== START =====
+2026-02-12 07:18:55.978 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:18:55.980 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:18:57.272 | Stage resolve ready | Command=rc | WaitMs=1282 | Expected=4944 | Actual=4944 | Session=135eb1d683524a2d949545a461eb2e71
+2026-02-12 07:18:57.277 | Stage accepted | Command=rc | Session=135eb1d683524a2d949545a461eb2e71 | Expected=4944 | Actual=4944
+2026-02-12 07:18:58.332 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:18:59.073 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.731s | Files=0 | Bytes=0
+2026-02-12 07:18:59.082 | FastPath wildcard-all-files used | Source='D:\Users\joty79\Desktop\test6' | Count=4944
+2026-02-12 07:18:59.090 | Session benchmark | Ops=1 | Failed=0 | Files=0 | Bytes=0 | Time=1.805s | Throughput=-
+2026-02-12 07:19:18.476 | Finished main flow.
+2026-02-12 07:19:59.578 | ===== START =====
+2026-02-12 07:19:59.580 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:19:59.581 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:20:00.013 | Stage resolve ready | Command=rc | WaitMs=423 | Expected=2268 | Actual=2268 | Session=6be8486568984af5b59c0f39ccd1a498
+2026-02-12 07:20:00.017 | Stage accepted | Command=rc | Session=6be8486568984af5b59c0f39ccd1a498 | Expected=2268 | Actual=2268
+2026-02-12 07:20:00.893 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:00.978 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.074s | Files=379 | Bytes=50897672
+2026-02-12 07:20:01.014 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:01.082 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.068s | Files=350 | Bytes=18090490
+2026-02-12 07:20:01.110 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:01.179 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.068s | Files=359 | Bytes=19308388
+2026-02-12 07:20:01.206 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:01.277 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.07s | Files=356 | Bytes=32808275
+2026-02-12 07:20:01.303 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:01.374 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.07s | Files=356 | Bytes=27111703
+2026-02-12 07:20:01.408 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:01.478 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.068s | Files=356 | Bytes=43847207
+2026-02-12 07:20:01.491 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:01.519 | Transfer result | ExitCode=1 | Desc='Files copied successfully' | Elapsed=0.028s | Files=112 | Bytes=4769073
+2026-02-12 07:20:01.528 | Session benchmark | Ops=7 | Failed=0 | Files=2268 | Bytes=196832808 | Time=1.503s | Throughput=124.91 MB/s
+2026-02-12 07:20:05.764 | Finished main flow.
+2026-02-12 07:20:13.426 | ===== START =====
+2026-02-12 07:20:13.428 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:20:13.429 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:20:13.850 | Stage resolve ready | Command=rc | WaitMs=409 | Expected=2232 | Actual=2232 | Session=906f0670f76243d8801e2733445d127b
+2026-02-12 07:20:13.854 | Stage accepted | Command=rc | Session=906f0670f76243d8801e2733445d127b | Expected=2232 | Actual=2232
+2026-02-12 07:20:14.738 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:14.776 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.028s | Files=378 | Bytes=50847894
+2026-02-12 07:20:14.814 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:14.835 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.02s | Files=350 | Bytes=18090490
+2026-02-12 07:20:14.862 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:14.884 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.022s | Files=359 | Bytes=19308388
+2026-02-12 07:20:14.910 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:14.931 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.02s | Files=356 | Bytes=32808275
+2026-02-12 07:20:14.957 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:14.982 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.024s | Files=356 | Bytes=27111703
+2026-02-12 07:20:15.008 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:15.029 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.02s | Files=356 | Bytes=43847207
+2026-02-12 07:20:15.041 | Transfer start | Source='D:\Users\joty79\Desktop\test6' | Dest='L:\New folder (5)' | MT=48 | Reason='RoboTune default_mt' | Media=SSD->SSD
+2026-02-12 07:20:15.052 | Transfer result | ExitCode=0 | Desc='No files copied (nothing to do)' | Elapsed=0.011s | Files=77 | Bytes=3232179
+2026-02-12 07:20:15.061 | Session benchmark | Ops=7 | Failed=0 | Files=2232 | Bytes=195246136 | Time=1.198s | Throughput=155.40 MB/s
+2026-02-12 07:20:19.010 | Finished main flow.
+2026-02-12 07:21:19.042 | ===== START =====
+2026-02-12 07:21:19.043 | Config path: D:\Users\joty79\scripts\Robocopy\RoboTune.json
+2026-02-12 07:21:19.045 | BenchmarkMode=True | BenchmarkOutput=True | HoldWindow=True | DebugMode=False
+2026-02-12 07:21:31.791 | Stage resolve timeout | Requested=auto | WaitMs=12736 | HadSignal=True
+2026-02-12 07:21:31.796 | Stage rejected | Command=rc | Ready=False | Expected=4944 | Actual=3597 | Session=036a121529df4d53b6319f97a94c5825
+2026-02-12 07:21:35.810 | Exit requested | Code=1 | Reason=NoListAvailable (mode=s): single source missing.
