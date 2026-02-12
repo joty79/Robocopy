@@ -1,0 +1,9 @@
+{
+  "benchmark_mode": true,
+  "benchmark": true,
+  "hold_window": true,
+  "debug_mode": false,
+  "default_mt": null,
+  "extra_args": [],
+  "routes": []
+}
