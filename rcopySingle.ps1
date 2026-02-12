@@ -191,6 +191,33 @@ function Get-ExistingStagedPaths {
     return Get-UniqueExistingPaths -Candidates ([string[]]$paths.ToArray())
 }
 
+function Clear-RegistryValuesByName {
+	param([string]$RegistryPath)
+
+	if ([string]::IsNullOrWhiteSpace($RegistryPath)) { return }
+	if (-not (Test-Path -LiteralPath $RegistryPath)) { return }
+
+	$item = Get-ItemProperty -LiteralPath $RegistryPath -ErrorAction SilentlyContinue
+	if (-not $item) { return }
+
+	$namesToRemove = @(
+		$item.PSObject.Properties |
+		Where-Object {
+			$_.Name -notmatch '^PS' -and
+			$_.Name -ne '(default)'
+		} |
+		Select-Object -ExpandProperty Name
+	)
+
+	foreach ($name in @($namesToRemove)) {
+		if ([string]::IsNullOrWhiteSpace([string]$name)) { continue }
+		try {
+			Remove-ItemProperty -LiteralPath $RegistryPath -Name $name -ErrorAction SilentlyContinue
+		}
+		catch { }
+	}
+}
+
 function Save-StagedPaths {
 	param(
 		[ValidateSet("rc", "mv")]
@@ -204,38 +231,14 @@ function Save-StagedPaths {
         New-Item -Path $regPath -Force | Out-Null
     }
 
-	$existing = @()
-	$reuseSession = $false
 	$sessionId = [Guid]::NewGuid().ToString("N")
 
-    $item = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
-    if ($item -and $item.PSObject.Properties.Name -contains "__last_stage_utc") {
-        $lastText = [string]$item.__last_stage_utc
-        try {
-            $lastUtc = [DateTime]::Parse($lastText)
-            $ageSeconds = ((Get-Date).ToUniversalTime() - $lastUtc.ToUniversalTime()).TotalSeconds
-            if ($ageSeconds -ge 0 -and $ageSeconds -le $script:SessionWindowSeconds) {
-                $reuseSession = $true
-            }
-        }
-        catch { }
-    }
-
-	if ($reuseSession) {
-		$existing = @(Get-ExistingStagedPaths -RegistryPath $regPath)
-		if ($item -and $item.PSObject.Properties.Name -contains "__session_id") {
-			$prevSession = [string]$item.__session_id
-			if (-not [string]::IsNullOrWhiteSpace($prevSession)) {
-				$sessionId = $prevSession
-			}
-		}
-	}
-
-	$combined = @(Get-UniqueExistingPaths -Candidates ([string[]](@($existing) + @($pathList))))
+	# Atomic stage: every copy/cut action replaces previous staged list.
+	$combined = @(Get-UniqueExistingPaths -Candidates ([string[]]$pathList))
 	$expectedCount = @($combined).Count
 	$stageUtc = (Get-Date).ToUniversalTime().ToString("o")
 
-	Remove-ItemProperty -LiteralPath $regPath -Name * -ErrorAction SilentlyContinue
+	Clear-RegistryValuesByName -RegistryPath $regPath
 	New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 0 -Force | Out-Null
 	for ($i = 0; $i -lt @($combined).Count; $i++) {
 		$valueName = "item_{0:D6}" -f ($i + 1)
@@ -247,7 +250,7 @@ function Save-StagedPaths {
 	New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 1 -Force | Out-Null
 
 	return [pscustomobject]@{
-		ReusedSession = $reuseSession
+		ReusedSession = $false
 		TotalItems    = @($combined).Count
 		ExpectedCount = $expectedCount
 		SessionId     = $sessionId

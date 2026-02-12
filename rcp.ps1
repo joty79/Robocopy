@@ -257,6 +257,44 @@ function Select-ActiveStagedCommand {
 	return $null
 }
 
+function Get-ReadyStagedSnapshotWithWait {
+	param(
+		[ValidateSet("rc", "mv")] [string]$CommandName,
+		[int]$MaxWaitMs = $script:StageReadyMaxWaitMs,
+		[int]$FastFailMs = $script:StageReadyFastFailMs,
+		[int]$PollMs = $script:StageReadyPollMs
+	)
+
+	$timer = [System.Diagnostics.Stopwatch]::StartNew()
+	$hadStageLock = $false
+
+	while ($true) {
+		$snapshot = Get-StagedSnapshot -CommandName $CommandName
+		if (Test-StagedSnapshotReady -Snapshot $snapshot) {
+			if ($timer.ElapsedMilliseconds -gt 0) {
+				Write-RunLog ("Stage wait resolved | Command={0} | WaitMs={1} | Items={2} | HadLock={3}" -f $CommandName, $timer.ElapsedMilliseconds, @($snapshot.Paths).Count, $hadStageLock)
+			}
+			return $snapshot
+		}
+
+		$lockExists = Test-Path -LiteralPath $script:StageLockPath
+		if ($lockExists) { $hadStageLock = $true }
+
+		if ($timer.ElapsedMilliseconds -ge $MaxWaitMs) {
+			if ($hadStageLock -or $lockExists) {
+				Write-RunLog ("Stage wait timeout | Command={0} | WaitMs={1} | HadLock={2}" -f $CommandName, $timer.ElapsedMilliseconds, $hadStageLock)
+			}
+			return $snapshot
+		}
+
+		if ((-not $lockExists) -and (-not $hadStageLock) -and ($timer.ElapsedMilliseconds -ge $FastFailMs)) {
+			return $snapshot
+		}
+
+		Start-Sleep -Milliseconds $PollMs
+	}
+}
+
 function Get-StagedPathListWithWait {
 	param(
 		[string]$CommandName,
@@ -705,6 +743,33 @@ function Write-RunLog {
 		Add-Content -LiteralPath $script:RunLogPath -Value $line -Encoding UTF8
 	}
 	catch { }
+}
+
+function Clear-StagedRegistryValues {
+	param([ValidateSet("rc", "mv")] [string]$CommandName)
+
+	$regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
+	if (-not (Test-Path -LiteralPath $regPath)) { return }
+
+	$item = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
+	if (-not $item) { return }
+
+	$namesToRemove = @(
+		$item.PSObject.Properties |
+		Where-Object {
+			$_.Name -notmatch '^PS' -and
+			$_.Name -ne '(default)'
+		} |
+		Select-Object -ExpandProperty Name
+	)
+
+	foreach ($name in @($namesToRemove)) {
+		if ([string]::IsNullOrWhiteSpace([string]$name)) { continue }
+		try {
+			Remove-ItemProperty -LiteralPath $regPath -Name $name -ErrorAction SilentlyContinue
+		}
+		catch { }
+	}
 }
 
 function Clear-StagingBurstMarker {
@@ -1286,6 +1351,9 @@ try {
 	if (-not $activeSnapshot -or $activeSnapshot.CommandName -ne $command) {
 		$activeSnapshot = Get-StagedSnapshot -CommandName $command
 	}
+	if (-not (Test-StagedSnapshotReady -Snapshot $activeSnapshot)) {
+		$activeSnapshot = Get-ReadyStagedSnapshotWithWait -CommandName $command
+	}
 
 	if (Test-StagedSnapshotReady -Snapshot $activeSnapshot) {
 		$array = @($activeSnapshot.Paths)
@@ -1348,7 +1416,7 @@ try {
 							}	
 
 							{ "y", "yes" -contains $_ } {
-								Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * | Out-Null
+								Clear-StagedRegistryValues -CommandName $command
 								Write-Host "List deleted."
 								Start-Sleep 2
 								Exit-Script -Code 0 -Reason "User deleted source list."
@@ -1464,7 +1532,7 @@ try {
 						}
 						"Escape" {
 							Write-Host "Aborted $string3 the remaining items."
-							Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
+							Clear-StagedRegistryValues -CommandName $command
 							Start-Sleep 2
 							Exit-Script -Code 2 -Reason "User pressed Escape in merge prompt."
 						}
@@ -1503,7 +1571,7 @@ try {
 			Write-RunLog ("Session benchmark | Ops={0} | Failed={1} | Files={2} | Bytes={3} | Time={4}s | Throughput={5}" -f $completedOps.Count, $failedOps, $totalFiles, $totalBytes, $totalSeconds, $aggregateThroughput)
 		}
 
-		Remove-ItemProperty -Path "HKCU:\RCWM\$command" -Name * -ErrorAction SilentlyContinue | Out-Null
+		Clear-StagedRegistryValues -CommandName $command
 		Write-Output ""
 		Write-Host "Finished!" -ForegroundColor Blue
 		Write-RunLog "Finished main flow."
