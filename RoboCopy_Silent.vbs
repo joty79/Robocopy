@@ -9,6 +9,8 @@ Const SCRIPT_ROOT = "D:\Users\joty79\scripts\Robocopy"
 Const STALE_LOCK_SECONDS = 120
 Const BURST_SUPPRESS_SECONDS = 6
 Const MULTI_STAGE_EXIT_CODE = 10
+Const LOCK_RETRY_ATTEMPTS = 4
+Const LOCK_RETRY_DELAY_MS = 700
 
 Dim STATE_DIR, LOCK_FILE
 STATE_DIR = SCRIPT_ROOT & "\state"
@@ -221,8 +223,28 @@ If IsSuppressedBurst(mode, anchorParent) Then
 End If
 
 If Not TryAcquireLock() Then
-    ' Another invoke in the same selection burst is already handling staging.
-    WScript.Quit 0
+    ' If lock is briefly held by a just-finished burst, retry a few times
+    ' so the first user click does not get dropped.
+    Dim acquired, attempt
+    acquired = False
+
+    For attempt = 1 To LOCK_RETRY_ATTEMPTS
+        WScript.Sleep LOCK_RETRY_DELAY_MS
+        CleanupStaleLock
+
+        If IsSuppressedBurst(mode, anchorParent) Then
+            WScript.Quit 0
+        End If
+
+        If TryAcquireLock() Then
+            acquired = True
+            Exit For
+        End If
+    Next
+
+    If Not acquired Then
+        WScript.Quit 0
+    End If
 End If
 
 safeAnchor = Replace(anchorPath, """", """""")
