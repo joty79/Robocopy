@@ -105,6 +105,158 @@ function Get-StagedPathList {
 	return Get-UniquePathList -InputPaths @($paths)
 }
 
+function Convert-ToStageInt {
+	param([object]$Value)
+
+	if ($null -eq $Value) { return $null }
+	$text = [string]$Value
+	if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+
+	$parsed = 0
+	if ([int]::TryParse($text, [ref]$parsed)) {
+		return $parsed
+	}
+	return $null
+}
+
+function Get-StagedSnapshot {
+	param([ValidateSet("rc", "mv")] [string]$CommandName)
+
+	$regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
+	$result = [ordered]@{
+		CommandName    = $CommandName
+		RegPath        = $regPath
+		Exists         = $false
+		Ready          = $false
+		ExpectedCount  = $null
+		SessionId      = $null
+		LastStageUtc   = $null
+		Paths          = @()
+	}
+
+	if (-not (Test-Path -LiteralPath $regPath)) {
+		return [pscustomobject]$result
+	}
+
+	$item = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
+	if (-not $item) {
+		return [pscustomobject]$result
+	}
+
+	$result.Exists = $true
+
+	$propertyNames = @($item.PSObject.Properties | Select-Object -ExpandProperty Name)
+	$hasReady = $propertyNames -contains "__ready"
+	$hasExpected = $propertyNames -contains "__expected_count"
+
+	if ($hasReady) {
+		$readyInt = Convert-ToStageInt -Value $item.__ready
+		$result.Ready = ($null -ne $readyInt -and $readyInt -eq 1)
+	}
+	else {
+		# Fail-closed for legacy/unmarked stage snapshots.
+		$result.Ready = $false
+	}
+
+	if ($hasExpected) {
+		$result.ExpectedCount = Convert-ToStageInt -Value $item.__expected_count
+	}
+
+	if ($propertyNames -contains "__session_id") {
+		$session = [string]$item.__session_id
+		if (-not [string]::IsNullOrWhiteSpace($session)) {
+			$result.SessionId = $session
+		}
+	}
+
+	if ($propertyNames -contains "__last_stage_utc") {
+		$utcText = [string]$item.__last_stage_utc
+		try {
+			$result.LastStageUtc = [DateTime]::Parse($utcText)
+		}
+		catch { }
+	}
+
+	$ignore = @("PSPath", "PSParentPath", "PSChildName", "PSDrive", "PSProvider")
+	$paths = New-Object System.Collections.Generic.List[string]
+	$stageProps = @(
+		$item.PSObject.Properties |
+		Where-Object {
+			$ignore -notcontains $_.Name -and
+			$_.Name -ne "(default)" -and
+			-not $_.Name.StartsWith("__")
+		} |
+		Sort-Object Name
+	)
+
+	foreach ($prop in $stageProps) {
+		$candidate = [string]$prop.Value
+		if ([string]::IsNullOrWhiteSpace($candidate)) {
+			$candidate = [string]$prop.Name
+		}
+		if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+		if (-not (Test-Path -LiteralPath $candidate)) { continue }
+		[void]$paths.Add($candidate)
+	}
+
+	$result.Paths = @(Get-UniquePathList -InputPaths @($paths))
+	return [pscustomobject]$result
+}
+
+function Test-StagedSnapshotReady {
+	param([object]$Snapshot)
+
+	if (-not $Snapshot) { return $false }
+	if (-not $Snapshot.Exists) { return $false }
+	if (-not $Snapshot.Ready) { return $false }
+
+	$pathCount = @($Snapshot.Paths).Count
+	if ($pathCount -le 0) { return $false }
+
+	# Fail-closed: metadata must exist and match the actual staged list count.
+	if ($null -eq $Snapshot.ExpectedCount) { return $false }
+	if ([int]$Snapshot.ExpectedCount -ne $pathCount) { return $false }
+
+	return $true
+}
+
+function Get-SnapshotTimestamp {
+	param([object]$Snapshot)
+
+	if ($Snapshot -and $Snapshot.LastStageUtc) {
+		return [DateTime]$Snapshot.LastStageUtc
+	}
+	return [DateTime]::MinValue
+}
+
+function Select-ActiveStagedCommand {
+	param(
+		[object]$RcSnapshot,
+		[object]$MvSnapshot,
+		[string]$RequestedCommand
+	)
+
+	$rcReady = Test-StagedSnapshotReady -Snapshot $RcSnapshot
+	$mvReady = Test-StagedSnapshotReady -Snapshot $MvSnapshot
+
+	if (-not [string]::IsNullOrWhiteSpace($RequestedCommand)) {
+		$requested = $RequestedCommand.Trim().ToLowerInvariant()
+		if ($requested -eq "rc" -and $rcReady) { return "rc" }
+		if ($requested -eq "mv" -and $mvReady) { return "mv" }
+	}
+
+	if ($rcReady -and $mvReady) {
+		$rcTs = Get-SnapshotTimestamp -Snapshot $RcSnapshot
+		$mvTs = Get-SnapshotTimestamp -Snapshot $MvSnapshot
+		if ($rcTs -ge $mvTs) { return "rc" }
+		return "mv"
+	}
+
+	if ($rcReady) { return "rc" }
+	if ($mvReady) { return "mv" }
+	return $null
+}
+
 function Get-StagedPathListWithWait {
 	param(
 		[string]$CommandName,
@@ -1071,22 +1223,34 @@ try {
 		exit 0
 	}
 
-	# Auto-detect mode based on registry keys (check if they have properties, not just exist)
-	$mvKey = Get-Item -Path "HKCU:\RCWM\mv" -ErrorAction SilentlyContinue
-	$rcKey = Get-Item -Path "HKCU:\RCWM\rc" -ErrorAction SilentlyContinue
-
-	if ($mvKey -and $mvKey.Property.Count -gt 0) {
-		$command = "mv"
-		$mode = "s"
+	$requestedCommand = ""
+	if ($args.Count -ge 1 -and $null -ne $args[0]) {
+		$requestedCommand = ([string]$args[0]).Trim().ToLowerInvariant()
 	}
-	elseif ($rcKey -and $rcKey.Property.Count -gt 0) {
-		$command = "rc"
+
+	$requestedMode = ""
+	if ($args.Count -ge 2 -and $null -ne $args[1]) {
+		$requestedMode = ([string]$args[1]).Trim().ToLowerInvariant()
+	}
+
+	$rcSnapshot = Get-StagedSnapshot -CommandName "rc"
+	$mvSnapshot = Get-StagedSnapshot -CommandName "mv"
+	$activeStagedCommand = Select-ActiveStagedCommand -RcSnapshot $rcSnapshot -MvSnapshot $mvSnapshot -RequestedCommand $requestedCommand
+
+	if ($activeStagedCommand) {
+		$command = $activeStagedCommand
 		$mode = "s"
 	}
 	else {
-		# Default fallback or error if neither has properties
-		$command = $args[0]
-		$mode = $args[1]
+		$command = $requestedCommand
+		$mode = $requestedMode
+	}
+
+	if ($command -ne "mv" -and $command -ne "rc") {
+		$command = "rc"
+	}
+	if ($mode -ne "m" -and $mode -ne "s") {
+		$mode = "s"
 	}
 
 
@@ -1118,7 +1282,22 @@ try {
 	}
 
 	# Read staged files/folders from registry list.
-	$array = Get-StagedPathList -CommandName $command
+	$activeSnapshot = if ($command -eq "mv") { $mvSnapshot } else { $rcSnapshot }
+	if (-not $activeSnapshot -or $activeSnapshot.CommandName -ne $command) {
+		$activeSnapshot = Get-StagedSnapshot -CommandName $command
+	}
+
+	if (Test-StagedSnapshotReady -Snapshot $activeSnapshot) {
+		$array = @($activeSnapshot.Paths)
+		Write-RunLog ("Stage accepted | Command={0} | Session={1} | Expected={2} | Actual={3}" -f $command, $activeSnapshot.SessionId, $activeSnapshot.ExpectedCount, @($array).Count)
+	}
+	else {
+		$array = @()
+		if ($activeSnapshot.Exists) {
+			Write-RunLog ("Stage rejected | Command={0} | Ready={1} | Expected={2} | Actual={3} | Session={4}" -f $command, $activeSnapshot.Ready, $activeSnapshot.ExpectedCount, @($activeSnapshot.Paths).Count, $activeSnapshot.SessionId)
+		}
+	}
+
 	$arrayLength = @($array).Count
 	if ($arrayLength -eq 0) {
 		NoListAvailable
