@@ -25,6 +25,8 @@
 $process = Get-Process -Id $pid
 $process.PriorityClass = 'High'
 $script:ThreadDecisionCache = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
+$script:StageStateDir = Join-Path $PSScriptRoot "state"
+$script:StageBurstMarkerPath = Join-Path $script:StageStateDir "stage.burst"
 
 
 function NoListAvailable {
@@ -510,6 +512,14 @@ function Write-RunLog {
 	catch { }
 }
 
+function Clear-StagingBurstMarker {
+	try {
+		if ([string]::IsNullOrWhiteSpace($script:StageBurstMarkerPath)) { return }
+		Remove-Item -LiteralPath $script:StageBurstMarkerPath -Force -ErrorAction SilentlyContinue
+	}
+	catch { }
+}
+
 function Open-RoboTuneWindow {
 	$roboTunePath = Join-Path $PSScriptRoot "RoboTune.ps1"
 	if (-not (Test-Path -LiteralPath $roboTunePath)) {
@@ -557,6 +567,7 @@ function Exit-Script {
 	if ($script:RunSettings -and $null -ne $script:RunSettings.HoldWindow) {
 		$hold = [bool]$script:RunSettings.HoldWindow
 	}
+	Clear-StagingBurstMarker
 	Wait-ForCloseOrTune -Enabled $hold
 	exit $Code
 }
@@ -1274,6 +1285,7 @@ try {
 		Write-Output ""
 		Write-Host "Finished!" -ForegroundColor Blue
 		Write-RunLog "Finished main flow."
+		Clear-StagingBurstMarker
 		Wait-ForCloseOrTune -Enabled $script:RunSettings.HoldWindow
 	}
 
@@ -1290,6 +1302,7 @@ catch {
 	Write-Host $_.Exception.Message -ForegroundColor Red
 	Write-Host "`nError has been logged to: $errorLogPath" -ForegroundColor Yellow
 	Write-Host "Run log: $script:RunLogPath" -ForegroundColor Yellow
+	Clear-StagingBurstMarker
 	Write-Host "Press any key to exit..." -ForegroundColor Yellow
 	[Console]::ReadKey($true) | Out-Null
 }

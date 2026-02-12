@@ -30,6 +30,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
   - Opens `wt.exe` as admin and runs `rcp.ps1` with `pwsh -NoProfile`.
 - `rcp.ps1`
   - Reads staged files/folders from registry and executes `robocopy`.
+  - Clears the staging burst marker (`state\stage.burst`) on paste exit paths, so immediate next copy/cut is not suppressed.
   - Handles overwrite/merge prompt when destination item already exists.
   - Prints benchmark output in the paste window (per folder + session summary).
 - `RoboTune.ps1`
