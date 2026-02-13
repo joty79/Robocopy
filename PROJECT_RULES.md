@@ -170,3 +170,19 @@
   - `PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `rcp.ps1` μέσω `Parser::ParseFile` (`OK`).
+
+### 2026-02-13 - Preserve source root folder in tokenized select-all move
+- Problem:
+  - Σε `Robo-Cut` select-all μέσα από folder, το source root folder μπορούσε να διαγραφεί όταν άδειαζε.
+- Root cause:
+  - Το tokenized move path εκτελεί robocopy στο source directory με `/MOVE`, που μπορεί να αφαιρέσει και το root source folder όταν μείνει empty.
+- Guardrail / Rule:
+  - Πριν το tokenized move, δημιουργείται προσωρινό keep-root marker file στο source root.
+  - Στα mode flags προστίθεται `/XF <marker>` ώστε να μη μετακινηθεί αυτό το file και να μην αδειάσει πλήρως ο root folder.
+  - Μετά το transfer, το marker file αφαιρείται (`finally` cleanup), ώστε να μένει ο original source folder άδειος αλλά ίδιος (χωρίς delete/recreate reorder).
+- Files affected:
+  - `rcp.ps1`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` μέσω `Parser::ParseFile` (`OK`).
+  - Runtime verification pending (select-all cut από source folder, επιβεβαίωση ότι ο source folder διατηρεί θέση/identity).

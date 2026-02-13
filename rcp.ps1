@@ -1429,11 +1429,42 @@ function Invoke-StagedPathCollection {
 			}
 		}
 
+		$rootKeepFilePath = $null
+		if ($IsMove) {
+			try {
+				$rootKeepFileName = ("__rcwm_keep_root_{0}.tmp" -f ([guid]::NewGuid().ToString("N")))
+				$rootKeepFilePath = Join-Path $sourceDirectory $rootKeepFileName
+				[System.IO.File]::WriteAllText($rootKeepFilePath, "")
+				if ($tokenSet.Add('/XF')) {
+					[void]$filteredTokens.Add('/XF')
+				}
+				[void]$filteredTokens.Add($rootKeepFileName)
+				Write-RunLog ("SelectAll token move guard | Keep-root marker='{0}'" -f $rootKeepFileName)
+			}
+			catch {
+				$rootKeepFilePath = $null
+				Write-RunLog ("SelectAll token move guard warning | Failed to create keep-root marker in '{0}' | {1}" -f $sourceDirectory, $_.Exception.Message)
+			}
+		}
+
 		$effectiveModeTokens = [string[]]$filteredTokens.ToArray()
 		$effectiveModeText = [string]::Join(' ', $effectiveModeTokens)
 
 		Write-RunLog ("SelectAll token transfer | Source='{0}' | Dest='{1}' | ModeFlag='{2}' | IsMove={3} | MergeMode={4} | SelectedCount={5}" -f $sourceDirectory, $PasteIntoDirectory, $effectiveModeText, $IsMove, [bool]$MergeMode, $tokenSelectedCount)
-		$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeTokens -MergeMode:$MergeMode
+		$tokenResult = $null
+		try {
+			$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeTokens -MergeMode:$MergeMode
+		}
+		finally {
+			if ($rootKeepFilePath -and [System.IO.File]::Exists($rootKeepFilePath)) {
+				try {
+					Remove-Item -LiteralPath $rootKeepFilePath -Force -ErrorAction Stop
+				}
+				catch {
+					Write-RunLog ("SelectAll token move guard warning | Failed to remove keep-root marker '{0}' | {1}" -f $rootKeepFilePath, $_.Exception.Message)
+				}
+			}
+		}
 		if ($tokenResult) {
 			$results += $tokenResult
 		}
