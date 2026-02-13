@@ -9,9 +9,9 @@ param(
 [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
 
 $script:StageLogPath = Join-Path $PSScriptRoot "stage_log.txt"
-$script:SelectionRetryCount = 18
-$script:SelectionRetryDelayMs = 85
-$script:SelectionStableHits = 3
+$script:SelectionRetryCount = 10
+$script:SelectionRetryDelayMs = 45
+$script:SelectionStableHits = 2
 $script:StageMutexName = "Global\MoveTo_RoboCopy_Stage"
 $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageFilesDir = Join-Path $script:StageStateDir "staging"
@@ -36,6 +36,18 @@ function Resolve-NormalPath {
     catch {
         return $null
     }
+}
+
+function Normalize-RawPathValue {
+    param([string]$PathValue)
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $null }
+    $candidate = $PathValue.Trim()
+    if ($candidate.Length -ge 2 -and $candidate.StartsWith('"') -and $candidate.EndsWith('"')) {
+        $candidate = $candidate.Substring(1, $candidate.Length - 2)
+    }
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
+    return $candidate
 }
 
 function Ensure-StageStateDirectories {
@@ -149,16 +161,14 @@ function Get-ExplorerSelectionFromParent {
                 $current = New-Object System.Collections.Generic.List[string]
                 $anchorHit = $false
                 foreach ($entry in @($doc.SelectedItems())) {
-                    $entryPath = [string]$entry.Path
-                    if (-not [string]::IsNullOrWhiteSpace($entryPath)) {
-                        [void]$current.Add($entryPath)
-                        if ($anchorNormalized -and $entryPath.Equals($anchorNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
-                            $anchorHit = $true
-                        }
+                    $entryPath = Normalize-RawPathValue -PathValue ([string]$entry.Path)
+                    if (-not $entryPath) { continue }
+                    [void]$current.Add($entryPath)
+                    if ($anchorNormalized -and $entryPath.Equals($anchorNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $anchorHit = $true
                     }
                 }
 
-                # Prefer the exact Explorer window whose selection contains the clicked anchor item.
                 if ($anchorHit -and $current.Count -gt 0) {
                     return [string[]]$current.ToArray()
                 }
@@ -176,17 +186,17 @@ function Get-ExplorerSelectionFromParent {
     return [string[]]$fallbackResults.ToArray()
 }
 
-function Get-UniqueExistingPaths {
+function Get-UniqueRawPaths {
     param([string[]]$Candidates)
 
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $out = New-Object System.Collections.Generic.List[string]
 
     foreach ($candidate in @($Candidates)) {
-        $resolved = Resolve-NormalPath -PathValue $candidate
-        if (-not $resolved) { continue }
-        if ($seen.Add($resolved)) {
-            [void]$out.Add($resolved)
+        $normalized = Normalize-RawPathValue -PathValue $candidate
+        if (-not $normalized) { continue }
+        if ($seen.Add($normalized)) {
+            [void]$out.Add($normalized)
         }
     }
 
@@ -207,7 +217,7 @@ function Get-BestSelectionFromParent {
 
     for ($attempt = 1; $attempt -le $script:SelectionRetryCount; $attempt++) {
         $selectionCandidates = Get-ExplorerSelectionFromParent -ParentPath $ParentPath -AnchorPath $AnchorPath
-        $currentPaths = @(Get-UniqueExistingPaths -Candidates $selectionCandidates)
+        $currentPaths = @(Get-UniqueRawPaths -Candidates $selectionCandidates)
         $currentSignature = [string]::Join("`n", $currentPaths)
 
         if ($currentPaths.Count -gt $bestPaths.Count) {
@@ -258,7 +268,8 @@ function Save-StagedPathsToRegistry {
         [string]$AnchorParentNormalized,
         [string]$SessionId,
         [string]$LastStageUtc,
-        [int]$ExpectedCount
+        [int]$ExpectedCount,
+        [switch]$IncludeItems
     )
 
     $regPath = "Registry::HKEY_CURRENT_USER\RCWM\$CommandName"
@@ -270,13 +281,15 @@ function Save-StagedPathsToRegistry {
     New-ItemProperty -LiteralPath $regPath -Name "__expected_count" -PropertyType DWord -Value $ExpectedCount -Force | Out-Null
     New-ItemProperty -LiteralPath $regPath -Name "__session_id" -PropertyType String -Value $SessionId -Force | Out-Null
     New-ItemProperty -LiteralPath $regPath -Name "__last_stage_utc" -PropertyType String -Value $LastStageUtc -Force | Out-Null
-    if (-not [string]::IsNullOrWhiteSpace($anchorParentNormalized)) {
-        New-ItemProperty -LiteralPath $regPath -Name "__anchor_parent" -PropertyType String -Value ($anchorParentNormalized.ToLowerInvariant()) -Force | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($AnchorParentNormalized)) {
+        New-ItemProperty -LiteralPath $regPath -Name "__anchor_parent" -PropertyType String -Value ($AnchorParentNormalized.ToLowerInvariant()) -Force | Out-Null
     }
 
-    for ($i = 0; $i -lt $ExpectedCount; $i++) {
-        $valueName = "item_{0:D6}" -f ($i + 1)
-        New-ItemProperty -LiteralPath $regPath -Name $valueName -PropertyType String -Value $uniquePaths[$i] -Force | Out-Null
+    if ($IncludeItems) {
+        for ($i = 0; $i -lt $ExpectedCount; $i++) {
+            $valueName = "item_{0:D6}" -f ($i + 1)
+            New-ItemProperty -LiteralPath $regPath -Name $valueName -PropertyType String -Value $uniquePaths[$i] -Force | Out-Null
+        }
     }
 
     New-ItemProperty -LiteralPath $regPath -Name "__ready" -PropertyType DWord -Value 1 -Force | Out-Null
@@ -297,20 +310,26 @@ function Save-StagedPathsToFile {
 
     $stagedFile = Get-StagedJsonPath -CommandName $CommandName
     $tempFile = "{0}.{1}.tmp" -f $stagedFile, ([Guid]::NewGuid().ToString("N"))
-    $payload = [ordered]@{
-        version        = 1
-        backend        = "file"
-        command        = $CommandName
-        ready          = $true
-        expected_count = $ExpectedCount
-        session_id     = $SessionId
-        last_stage_utc = $LastStageUtc
-        anchor_parent  = if ([string]::IsNullOrWhiteSpace($AnchorParentNormalized)) { $null } else { $AnchorParentNormalized.ToLowerInvariant() }
-        items          = @($Paths)
+    $anchorValue = if ([string]::IsNullOrWhiteSpace($AnchorParentNormalized)) { "" } else { $AnchorParentNormalized.ToLowerInvariant() }
+    $header = "V2|{0}|{1}|{2}|{3}|{4}" -f $CommandName, $SessionId, $LastStageUtc, $ExpectedCount, $anchorValue
+
+    $stream = $null
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        $stream = [System.IO.StreamWriter]::new($tempFile, $false, $utf8NoBom)
+        $stream.WriteLine($header)
+        foreach ($path in @($Paths)) {
+            $normalized = Normalize-RawPathValue -PathValue $path
+            if (-not $normalized) { continue }
+            $stream.WriteLine($normalized)
+        }
+    }
+    finally {
+        if ($stream) {
+            $stream.Dispose()
+        }
     }
 
-    $json = $payload | ConvertTo-Json -Depth 5
-    Set-Content -LiteralPath $tempFile -Value $json -Encoding UTF8
     Move-Item -LiteralPath $tempFile -Destination $stagedFile -Force
 }
 
@@ -325,26 +344,45 @@ function Save-StagedPaths {
     )
 
     $pathList = if ($null -eq $Paths) { @() } elseif ($Paths -is [string]) { @($Paths) } else { @($Paths) }
-    $uniquePaths = @(Get-UniqueExistingPaths -Candidates ([string[]]$pathList))
+    $dedupeTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $uniquePaths = @(Get-UniqueRawPaths -Candidates ([string[]]$pathList))
+    $dedupeTimer.Stop()
+
     $sessionId = [Guid]::NewGuid().ToString("N")
     $expectedCount = @($uniquePaths).Count
     $lastStageUtc = (Get-Date).ToUniversalTime().ToString("o")
     $anchorParentNormalized = Resolve-NormalPath -PathValue $AnchorParentPath
 
+    $persistFileMs = 0
+    $persistRegistryMs = 0
+
     if ($Backend -eq "registry") {
-        Save-StagedPathsToRegistry -CommandName $CommandName -Paths $uniquePaths -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
+        $registryTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        Save-StagedPathsToRegistry -CommandName $CommandName -Paths $uniquePaths -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount -IncludeItems
+        $registryTimer.Stop()
+        $persistRegistryMs = [int][Math]::Round($registryTimer.Elapsed.TotalMilliseconds)
     }
     else {
+        $fileTimer = [System.Diagnostics.Stopwatch]::StartNew()
         Save-StagedPathsToFile -CommandName $CommandName -Paths $uniquePaths -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
+        $fileTimer.Stop()
+        $persistFileMs = [int][Math]::Round($fileTimer.Elapsed.TotalMilliseconds)
+
         # Keep registry metadata in sync for VBS burst-suppression checks.
-        Save-StagedPathsToRegistry -CommandName $CommandName -Paths $uniquePaths -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
+        $registryTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        Save-StagedPathsToRegistry -CommandName $CommandName -Paths @() -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
+        $registryTimer.Stop()
+        $persistRegistryMs = [int][Math]::Round($registryTimer.Elapsed.TotalMilliseconds)
     }
 
     return [pscustomobject]@{
-        Backend       = $Backend
-        SessionId     = $sessionId
-        TotalItems    = $expectedCount
-        LastStageUtc  = $lastStageUtc
+        Backend          = $Backend
+        SessionId        = $sessionId
+        TotalItems       = $expectedCount
+        LastStageUtc     = $lastStageUtc
+        DedupeMs         = [int][Math]::Round($dedupeTimer.Elapsed.TotalMilliseconds)
+        PersistFileMs    = $persistFileMs
+        PersistRegistryMs = $persistRegistryMs
     }
 }
 
@@ -356,6 +394,7 @@ if (-not $anchorResolved) {
     exit 1
 }
 
+$stageTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $mutex = New-Object System.Threading.Mutex($false, $script:StageMutexName)
 $hasLock = $false
 try {
@@ -366,14 +405,18 @@ try {
     }
 
     $parentPath = Get-AnchorParentPath -PathValue $anchorResolved
+    $selectionTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath -AnchorPath $anchorResolved)
-
     if ($selectedPaths.Count -eq 0) {
         $selectedPaths = @($anchorResolved)
     }
+    $selectionTimer.Stop()
 
     $saveResult = Save-StagedPaths -CommandName $command -Paths $selectedPaths -AnchorParentPath $parentPath -Backend $script:StageBackend
-    Write-StageLog ("OK | mode={0} | backend={1} | anchor='{2}' | selected={3} | total={4} | expected={5} | session={6}" -f $command, $saveResult.Backend, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.TotalItems, $saveResult.SessionId)
+    $stageTimer.Stop()
+    $selectionReadMs = [int][Math]::Round($selectionTimer.Elapsed.TotalMilliseconds)
+    $totalStageMs = [int][Math]::Round($stageTimer.Elapsed.TotalMilliseconds)
+    Write-StageLog ("OK | mode={0} | backend={1} | anchor='{2}' | selected={3} | total={4} | expected={5} | session={6} | SelectionReadMs={7} | DedupeMs={8} | PersistFileMs={9} | PersistRegistryMs={10} | TotalStageMs={11}" -f $command, $saveResult.Backend, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.TotalItems, $saveResult.SessionId, $selectionReadMs, $saveResult.DedupeMs, $saveResult.PersistFileMs, $saveResult.PersistRegistryMs, $totalStageMs)
 
     if ($selectedPaths.Count -gt 1) {
         exit 10

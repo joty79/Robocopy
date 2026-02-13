@@ -23,9 +23,9 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
   - Captures full Explorer selection from the active parent window (files + folders) with short retries.
   - Uses a named mutex (`Global\MoveTo_RoboCopy_Stage`) to serialize concurrent staging writes.
   - Uses a short session window to append per-item invokes into one staged set.
-  - Stores staged source paths in `state\staging\rc.stage.json` / `state\staging\mv.stage.json` (atomic write).
+  - Stores staged source paths in `state\staging\rc.stage.json` / `state\staging\mv.stage.json` using a fast flat `V2` line-based payload (atomic temp-write + rename).
   - Supports fallback backend `registry` via `stage_backend` (RoboTune) or `RCWM_STAGE_BACKEND` env var.
-  - Writes diagnostics to `stage_log.txt`.
+  - Writes diagnostics/telemetry to `stage_log.txt` (`SelectionReadMs`, `DedupeMs`, `PersistFileMs`, `PersistRegistryMs`, `TotalStageMs`).
 - `RoboPaste_Admin.vbs`
   - Elevated launcher for paste.
   - Opens `wt.exe` as admin and runs `rcp.ps1` with `pwsh -NoProfile`.
@@ -46,6 +46,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 3. `rcopySingle.ps1` writes stage snapshot into:
    - `state\staging\rc.stage.json` for copy
    - `state\staging\mv.stage.json` for move
+   - file format is `V2` line payload (`V2|command|session|utc|expected|anchor_parent` + one path per line)
    - (or registry backend when configured)
 4. Right-click destination folder (or background) -> `Robo-Paste`.
 5. `RoboPaste_Admin.vbs` starts elevated `wt.exe`, running:
@@ -86,7 +87,8 @@ If destination folder already exists, script prompts:
 
 - Default backend: `file`.
   - Stage files: `state\staging\rc.stage.json`, `state\staging\mv.stage.json`
-  - Includes metadata (`ready`, `expected_count`, `session_id`, `last_stage_utc`, `items[]`).
+  - Uses flat `V2` line payload for fast staging writes.
+  - `rcp.ps1` keeps backward compatibility and can still read legacy JSON snapshots.
 - Alternate backend: `registry`.
   - Keys: `HKCU:\RCWM\rc`, `HKCU:\RCWM\mv`
   - Source paths stored as `item_000001`, `item_000002`, ...
@@ -171,6 +173,7 @@ Debug mode behavior:
 - `OFF`: no extra debug flags or debug log from this mode.
 
 Performance notes:
+- Stage phase uses lazy validation (raw path ingest + dedupe) and defers deep filesystem checks to paste phase.
 - File multi-select is grouped by source directory and passed to robocopy in larger filename batches (command-line safe chunking).
 - Folder copy/cut remains the fastest path because it executes directory-level robocopy flow.
 - Large selection/conflict previews are truncated in normal mode to reduce console rendering overhead.

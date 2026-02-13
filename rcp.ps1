@@ -63,12 +63,11 @@ function Get-UniquePathList {
 
 	foreach ($rawPath in @($InputPaths)) {
 		if ([string]::IsNullOrWhiteSpace($rawPath)) { continue }
-
-		$candidate = $rawPath
-		try {
-			$candidate = (Resolve-Path -LiteralPath $rawPath -ErrorAction Stop).ProviderPath
+		$candidate = $rawPath.Trim()
+		if ($candidate.Length -ge 2 -and $candidate.StartsWith('"') -and $candidate.EndsWith('"')) {
+			$candidate = $candidate.Substring(1, $candidate.Length - 2)
 		}
-		catch { }
+		if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
 
 		if ($seen.Add($candidate)) {
 			[void]$out.Add($candidate)
@@ -184,7 +183,6 @@ function Get-StagedSnapshotFromRegistry {
 			$candidate = [string]$prop.Name
 		}
 		if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-		if (-not (Test-Path -LiteralPath $candidate)) { continue }
 		[void]$paths.Add($candidate)
 	}
 
@@ -223,7 +221,122 @@ function Get-StagedSnapshotFromRegistry {
 	return [pscustomobject]@{
 		CommandName   = $CommandName
 		Backend       = "registry"
+		StageFormat   = "registry-v1"
 		StoragePath   = $regPath
+		Paths         = $uniquePaths
+		ActualCount   = $actualCount
+		ExpectedCount = $expectedCount
+		HasExpected   = $hasExpected
+		ReadyFlag     = $readyFlag
+		IsReady       = $isReady
+		LastStageUtc  = $lastStageUtc
+		SessionId     = $sessionId
+	}
+}
+
+function Convert-FlatV2ToSnapshot {
+	param(
+		[ValidateSet("rc", "mv")][string]$CommandName,
+		[string]$StageFile,
+		[string]$Raw
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
+	$lines = [regex]::Split($Raw, "`r?`n")
+	if ($lines.Count -eq 0) { return $null }
+
+	$headerLine = [string]$lines[0]
+	if ([string]::IsNullOrWhiteSpace($headerLine)) { return $null }
+	$headerLine = $headerLine.TrimStart([char]0xFEFF).Trim()
+	if (-not $headerLine.StartsWith("V2|", [System.StringComparison]::Ordinal)) { return $null }
+
+	$parts = $headerLine.Split('|', 6)
+	if ($parts.Count -lt 5) { return $null }
+	if (-not [string]::Equals($parts[1], $CommandName, [System.StringComparison]::OrdinalIgnoreCase)) {
+		return $null
+	}
+
+	$sessionId = if ($parts.Count -ge 3) { [string]$parts[2] } else { "" }
+	$lastStageUtc = if ($parts.Count -ge 4) { Convert-ToUtcDateOrNull -Text ([string]$parts[3]) } else { $null }
+	$expectedCount = -1
+	$hasExpected = $false
+	if ($parts.Count -ge 5 -and -not [string]::IsNullOrWhiteSpace([string]$parts[4])) {
+		$hasExpected = $true
+		try { $expectedCount = [int]$parts[4] } catch { $expectedCount = -1 }
+	}
+
+	$pathLines = @()
+	if ($lines.Count -gt 1) {
+		$pathLines = @($lines[1..($lines.Count - 1)])
+	}
+	$uniquePaths = @(Get-UniquePathList -InputPaths $pathLines)
+	$actualCount = @($uniquePaths).Count
+	$readyFlag = $true
+	$isReady = $readyFlag -and ($actualCount -gt 0)
+	if ($hasExpected -and $expectedCount -ge 0) {
+		$isReady = $isReady -and ($actualCount -eq $expectedCount)
+	}
+
+	return [pscustomobject]@{
+		CommandName   = $CommandName
+		Backend       = "file"
+		StageFormat   = "file-v2"
+		StoragePath   = $stageFile
+		Paths         = $uniquePaths
+		ActualCount   = $actualCount
+		ExpectedCount = $expectedCount
+		HasExpected   = $hasExpected
+		ReadyFlag     = $readyFlag
+		IsReady       = $isReady
+		LastStageUtc  = $lastStageUtc
+		SessionId     = $sessionId
+	}
+}
+
+function Convert-LegacyJsonToSnapshot {
+	param(
+		[ValidateSet("rc", "mv")][string]$CommandName,
+		[string]$StageFile,
+		[object]$Data
+	)
+
+	$paths = @()
+	if ($Data.items) {
+		$paths = @($Data.items | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	}
+	$uniquePaths = @(Get-UniquePathList -InputPaths $paths)
+	$actualCount = @($uniquePaths).Count
+	$expectedCount = -1
+	$hasExpected = $false
+	if ($Data.PSObject.Properties.Name -contains "expected_count") {
+		$hasExpected = $true
+		try { $expectedCount = [int]$Data.expected_count } catch { $expectedCount = -1 }
+	}
+
+	$readyFlag = $false
+	if ($Data.PSObject.Properties.Name -contains "ready") {
+		try { $readyFlag = [bool]$Data.ready } catch { $readyFlag = $false }
+	}
+	else {
+		$readyFlag = ($actualCount -gt 0)
+	}
+
+	$lastStageUtc = Convert-ToUtcDateOrNull -Text ([string]$Data.last_stage_utc)
+	$sessionId = ""
+	if ($Data.PSObject.Properties.Name -contains "session_id") {
+		$sessionId = [string]$Data.session_id
+	}
+
+	$isReady = $readyFlag -and ($actualCount -gt 0)
+	if ($hasExpected -and $expectedCount -ge 0) {
+		$isReady = $isReady -and ($actualCount -eq $expectedCount)
+	}
+
+	return [pscustomobject]@{
+		CommandName   = $CommandName
+		Backend       = "file"
+		StageFormat   = "file-json-v1"
+		StoragePath   = $stageFile
 		Paths         = $uniquePaths
 		ActualCount   = $actualCount
 		ExpectedCount = $expectedCount
@@ -244,55 +357,13 @@ function Get-StagedSnapshotFromFile {
 	try {
 		$raw = Get-Content -Raw -LiteralPath $stageFile -ErrorAction Stop
 		if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+
+		$v2 = Convert-FlatV2ToSnapshot -CommandName $CommandName -StageFile $stageFile -Raw $raw
+		if ($v2) { return $v2 }
+
 		$data = $raw | ConvertFrom-Json -ErrorAction Stop
-
-		$paths = @()
-		if ($data.items) {
-			$paths = @($data.items | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-		}
-		$existingPaths = @($paths | Where-Object { Test-Path -LiteralPath $_ })
-
-		$uniquePaths = @(Get-UniquePathList -InputPaths $existingPaths)
-		$actualCount = @($uniquePaths).Count
-		$expectedCount = -1
-		$hasExpected = $false
-		if ($data.PSObject.Properties.Name -contains "expected_count") {
-			$hasExpected = $true
-			try { $expectedCount = [int]$data.expected_count } catch { $expectedCount = -1 }
-		}
-
-		$readyFlag = $false
-		if ($data.PSObject.Properties.Name -contains "ready") {
-			try { $readyFlag = [bool]$data.ready } catch { $readyFlag = $false }
-		}
-		else {
-			$readyFlag = ($actualCount -gt 0)
-		}
-
-		$lastStageUtc = Convert-ToUtcDateOrNull -Text ([string]$data.last_stage_utc)
-		$sessionId = ""
-		if ($data.PSObject.Properties.Name -contains "session_id") {
-			$sessionId = [string]$data.session_id
-		}
-
-		$isReady = $readyFlag -and ($actualCount -gt 0)
-		if ($hasExpected -and $expectedCount -ge 0) {
-			$isReady = $isReady -and ($actualCount -eq $expectedCount)
-		}
-
-		return [pscustomobject]@{
-			CommandName   = $CommandName
-			Backend       = "file"
-			StoragePath   = $stageFile
-			Paths         = $uniquePaths
-			ActualCount   = $actualCount
-			ExpectedCount = $expectedCount
-			HasExpected   = $hasExpected
-			ReadyFlag     = $readyFlag
-			IsReady       = $isReady
-			LastStageUtc  = $lastStageUtc
-			SessionId     = $sessionId
-		}
+		$legacy = Convert-LegacyJsonToSnapshot -CommandName $CommandName -StageFile $stageFile -Data $data
+		return $legacy
 	}
 	catch {
 		return $null
@@ -1367,7 +1438,8 @@ try {
 	$resolvedSnapshot = Resolve-StagedPayload -RequestedCommand $requestedCommand -Backend $script:StageBackend
 	if ($resolvedSnapshot) {
 		$command = $resolvedSnapshot.CommandName
-		Write-RunLog ("Stage resolved | Requested={0} | Backend={1} | Command={2} | Expected={3} | Actual={4} | Session={5}" -f $requestedCommand, $script:StageBackend, $resolvedSnapshot.CommandName, $resolvedSnapshot.ExpectedCount, $resolvedSnapshot.ActualCount, $resolvedSnapshot.SessionId)
+		$resolvedStageFormat = if ($resolvedSnapshot.PSObject.Properties.Name -contains "StageFormat") { [string]$resolvedSnapshot.StageFormat } else { "unknown" }
+		Write-RunLog ("Stage resolved | Requested={0} | Backend={1} | Command={2} | StageFormat={3} | Expected={4} | Actual={5} | Session={6}" -f $requestedCommand, $script:StageBackend, $resolvedSnapshot.CommandName, $resolvedStageFormat, $resolvedSnapshot.ExpectedCount, $resolvedSnapshot.ActualCount, $resolvedSnapshot.SessionId)
 	}
 	else {
 		$command = if ($requestedCommand -eq "mv") { "mv" } else { "rc" }
@@ -1393,19 +1465,41 @@ try {
 
 	# Read staged files/folders from validated snapshot.
 	$array = @()
+	$activeSnapshot = $null
 	if ($resolvedSnapshot -and $resolvedSnapshot.CommandName -eq $command) {
 		$array = @($resolvedSnapshot.Paths)
+		$activeSnapshot = $resolvedSnapshot
 	}
 	else {
 		$fallbackSnapshot = Get-StagedSnapshot -CommandName $command -Backend $script:StageBackend
 		if ($fallbackSnapshot -and $fallbackSnapshot.IsReady) {
 			$array = @($fallbackSnapshot.Paths)
+			$activeSnapshot = $fallbackSnapshot
 		}
 	}
 	$arrayLength = @($array).Count
 	if ($arrayLength -eq 0) {
 		NoListAvailable
 	}
+
+	$stageFormat = "unknown"
+	$snapshotSession = ""
+	if ($activeSnapshot) {
+		if ($activeSnapshot.PSObject.Properties.Name -contains "StageFormat") {
+			$stageFormat = [string]$activeSnapshot.StageFormat
+		}
+		if ($activeSnapshot.PSObject.Properties.Name -contains "SessionId") {
+			$snapshotSession = [string]$activeSnapshot.SessionId
+		}
+	}
+	$missingAtPasteCount = 0
+	foreach ($candidatePath in @($array)) {
+		if ([string]::IsNullOrWhiteSpace($candidatePath)) { continue }
+		if (-not [System.IO.Directory]::Exists($candidatePath) -and -not [System.IO.File]::Exists($candidatePath)) {
+			$missingAtPasteCount++
+		}
+	}
+	Write-RunLog ("Stage payload ready | Command={0} | Mode={1} | StageFormat={2} | StagedCount={3} | MissingAtPasteCount={4} | Session={5}" -f $command, $mode, $stageFormat, $arrayLength, $missingAtPasteCount, $snapshotSession)
 
 	#skip prompt on single mode
 	if ($mode -eq "m") {
