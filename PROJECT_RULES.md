@@ -73,3 +73,57 @@
 - Validation/tests run:
   - Parse validation `rcopySingle.ps1` μέσω `scriptblock` compile check.
   - Runtime verification pending με νέο debug run.
+
+### 2026-02-13 - Safe Stage 3 select-all token path
+- Problem:
+  - Ακόμα και με Stage 2, το full item enumeration στο `SelectedItems()` παραμένει bottleneck για very large `Select All` selections.
+- Root cause:
+  - Materialization χιλιάδων selected paths πριν το stage write.
+- Guardrail / Rule:
+  - `rcopySingle.ps1` κάνει count-only fast check (`Folder.Items().Count` vs `SelectedItems().Count`) και tokenizes μόνο σε:
+    - single parent-match window
+    - select-all hint true
+    - count >= `SelectAllTokenThreshold`
+  - Token format: `?WILDCARD?|<selectedCount>|<sourceDir>`.
+  - `rcp.ps1` καταναλώνει token μέσω dedicated path (full-folder transfer, όχι file-filter path).
+  - Move token path αναβαθμίζει `/MOV` -> `/MOVE` για να καθαρίζονται και folders.
+  - Για file backend, registry metadata mirror κρατά `expected_count` από token selectedCount για burst suppression compatibility.
+  - Stage multi-exit (`10`) παραμένει ενεργό και για tokenized multi-selections.
+- Files affected:
+  - `rcopySingle.ps1`
+  - `rcp.ps1`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation για `rcopySingle.ps1` και `rcp.ps1` μέσω `scriptblock` compile check.
+  - Runtime verification pending (token path telemetry σε stage/run logs).
+
+### 2026-02-13 - Token move flag canonicalization fix
+- Problem:
+  - Στο tokenized move εμφανίστηκε invalid robocopy args: `"/MOV /MOVE"` (ExitCode 16).
+- Root cause:
+  - Mode flag replacement στο token path δεν canonicalized σωστά τα move tokens.
+- Guardrail / Rule:
+  - Στο token consumer γίνεται tokenization των flags και αφαιρούνται πάντα `/MOV` και `/MOVE` πριν compose.
+  - Για move token path προστίθεται μόνο ένα canonical `/MOVE`.
+- Files affected:
+  - `rcp.ps1`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` μέσω `scriptblock` compile check.
+  - Runtime verification pending (Robo-Cut select-all token path).
+
+### 2026-02-13 - Stage 3 non-select-all fallback fix
+- Problem:
+  - Μετά το Stage 3, non-select-all multi selections έβγαζαν `NoListAvailable`/stage timeout.
+- Root cause:
+  - Το νέο count-only Stage 3 flow επηρέασε αρνητικά το normal enumeration path.
+- Guardrail / Rule:
+  - `Select All` συνεχίζει με count-only token fastpath.
+  - Όταν **δεν** είναι select-all, γίνεται explicit fallback σε dedicated legacy enumeration helper.
+  - Κανόνας: speed optimizations μόνο σε token case, stable path για normal selections.
+- Files affected:
+  - `rcopySingle.ps1`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcopySingle.ps1` μέσω `scriptblock` compile check.
+  - Runtime verification pending (small/mid multi-select from same folder).

@@ -35,6 +35,7 @@ $script:StageResolveTimeoutMs = 4000
 $script:StageResolveMaxTimeoutMs = 12000
 $script:StageBurstStaleSeconds = 6
 $script:StageResolvePollMs = 80
+$script:SelectAllTokenPrefix = "?WILDCARD?|"
 
 
 function NoListAvailable {
@@ -75,6 +76,43 @@ function Get-UniquePathList {
 	}
 
 	return [string[]]$out.ToArray()
+}
+
+function Test-IsStageWildcardToken {
+	param([string]$PathValue)
+
+	if ([string]::IsNullOrWhiteSpace($PathValue)) { return $false }
+	return $PathValue.StartsWith($script:SelectAllTokenPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-StageWildcardTokenMeta {
+	param([string]$TokenPath)
+
+	if (-not (Test-IsStageWildcardToken -PathValue $TokenPath)) { return $null }
+	$payload = $TokenPath.Substring($script:SelectAllTokenPrefix.Length)
+	if ([string]::IsNullOrWhiteSpace($payload)) { return $null }
+
+	$selectedCount = 0
+	$source = $payload
+	$parts = $payload.Split('|', 2)
+	if ($parts.Count -eq 2 -and $parts[0] -match '^\d+$' -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
+		try { $selectedCount = [int]$parts[0] } catch { $selectedCount = 0 }
+		$source = $parts[1]
+	}
+
+	if ([string]::IsNullOrWhiteSpace($source)) { return $null }
+	return [pscustomobject]@{
+		SelectedCount   = $selectedCount
+		SourceDirectory = $source
+	}
+}
+
+function Get-StageWildcardSourceFromToken {
+	param([string]$TokenPath)
+
+	$meta = Get-StageWildcardTokenMeta -TokenPath $TokenPath
+	if (-not $meta) { return $null }
+	return [string]$meta.SourceDirectory
 }
 
 function Remove-StageBurstMarker {
@@ -1335,6 +1373,52 @@ function Invoke-StagedPathCollection {
 	$fileGroups = @{}
 	$pathList = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
+	if ($pathList.Count -eq 1 -and (Test-IsStageWildcardToken -PathValue $pathList[0])) {
+		$tokenPath = [string]$pathList[0]
+		$tokenMeta = Get-StageWildcardTokenMeta -TokenPath $tokenPath
+		$sourceDirectory = if ($tokenMeta) { [string]$tokenMeta.SourceDirectory } else { $null }
+		$tokenSelectedCount = if ($tokenMeta) { [int]$tokenMeta.SelectedCount } else { 0 }
+		if ([string]::IsNullOrWhiteSpace($sourceDirectory) -or -not [System.IO.Directory]::Exists($sourceDirectory)) {
+			Write-Host "Source directory from staged token does not exist: $sourceDirectory" -ForegroundColor Yellow
+			Write-RunLog ("SelectAll token rejected | Reason=MissingSource | Token='{0}'" -f $tokenPath)
+			return @()
+		}
+
+		$modeTokens = @()
+		if ($ModeFlag) {
+			$modeTokens = @(([string]$ModeFlag -split '\s+') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+		}
+
+		$filteredTokens = New-Object System.Collections.Generic.List[string]
+		foreach ($token in $modeTokens) {
+			if ($token -match '^(?i)/(MOV|MOVE)$') { continue }
+			[void]$filteredTokens.Add($token)
+		}
+		if ($IsMove) {
+			[void]$filteredTokens.Add('/MOVE')
+		}
+
+		$effectiveModeFlag = [string]::Join(' ', [string[]]$filteredTokens.ToArray())
+
+		Write-RunLog ("SelectAll token transfer | Source='{0}' | Dest='{1}' | ModeFlag='{2}' | IsMove={3} | MergeMode={4} | SelectedCount={5}" -f $sourceDirectory, $PasteIntoDirectory, $effectiveModeFlag, $IsMove, [bool]$MergeMode, $tokenSelectedCount)
+		$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeFlag -MergeMode:$MergeMode
+		if ($tokenResult) {
+			$results += $tokenResult
+		}
+		if ($ActionLabel) {
+			Write-Output ("Finished {0} all items from '{1}'" -f $ActionLabel, $sourceDirectory)
+		}
+		return @($results)
+	}
+
+	if ($pathList.Count -gt 1) {
+		$tokenCount = @($pathList | Where-Object { Test-IsStageWildcardToken -PathValue $_ }).Count
+		if ($tokenCount -gt 0) {
+			Write-RunLog ("SelectAll token ignored in mixed payload | TokenCount={0} | PathCount={1}" -f $tokenCount, $pathList.Count)
+			$pathList = @($pathList | Where-Object { -not (Test-IsStageWildcardToken -PathValue $_) })
+		}
+	}
+
 	foreach ($path in $pathList) {
 		$isDirectory = [System.IO.Directory]::Exists($path)
 		$isFile = $false
@@ -1493,13 +1577,22 @@ try {
 		}
 	}
 	$missingAtPasteCount = 0
+	$hasWildcardToken = $false
 	foreach ($candidatePath in @($array)) {
 		if ([string]::IsNullOrWhiteSpace($candidatePath)) { continue }
+		if (Test-IsStageWildcardToken -PathValue $candidatePath) {
+			$hasWildcardToken = $true
+			$tokenSource = Get-StageWildcardSourceFromToken -TokenPath $candidatePath
+			if ([string]::IsNullOrWhiteSpace($tokenSource) -or -not [System.IO.Directory]::Exists($tokenSource)) {
+				$missingAtPasteCount++
+			}
+			continue
+		}
 		if (-not [System.IO.Directory]::Exists($candidatePath) -and -not [System.IO.File]::Exists($candidatePath)) {
 			$missingAtPasteCount++
 		}
 	}
-	Write-RunLog ("Stage payload ready | Command={0} | Mode={1} | StageFormat={2} | StagedCount={3} | MissingAtPasteCount={4} | Session={5}" -f $command, $mode, $stageFormat, $arrayLength, $missingAtPasteCount, $snapshotSession)
+	Write-RunLog ("Stage payload ready | Command={0} | Mode={1} | StageFormat={2} | StagedCount={3} | MissingAtPasteCount={4} | Session={5} | WildcardToken={6}" -f $command, $mode, $stageFormat, $arrayLength, $missingAtPasteCount, $snapshotSession, $hasWildcardToken)
 
 	#skip prompt on single mode
 	if ($mode -eq "m") {

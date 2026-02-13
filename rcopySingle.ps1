@@ -14,6 +14,8 @@ $script:SelectionRetryDelayMs = 45
 $script:SelectionStableHits = 2
 $script:LargeSelectionTrustThreshold = 1000
 $script:LargeSelectionStableHits = 2
+$script:SelectAllTokenPrefix = "?WILDCARD?|"
+$script:SelectAllTokenThreshold = 1000
 $script:StageMutexName = "Global\MoveTo_RoboCopy_Stage"
 $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageFilesDir = Join-Path $script:StageStateDir "staging"
@@ -51,6 +53,48 @@ function Normalize-RawPathValue {
     }
     if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
     return $candidate
+}
+
+function Test-IsSelectAllToken {
+    param([string]$PathValue)
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $false }
+    return $PathValue.StartsWith($script:SelectAllTokenPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function New-SelectAllToken {
+    param(
+        [string]$SourceDirectory,
+        [int]$SelectedCount = 0
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SourceDirectory)) { return $null }
+    if ($SelectedCount -gt 0) {
+        return ("{0}{1}|{2}" -f $script:SelectAllTokenPrefix, $SelectedCount, $SourceDirectory)
+    }
+    return ("{0}{1}" -f $script:SelectAllTokenPrefix, $SourceDirectory)
+}
+
+function Get-SelectAllTokenPayload {
+    param([string]$TokenPath)
+
+    if (-not (Test-IsSelectAllToken -PathValue $TokenPath)) { return $null }
+    $payload = $TokenPath.Substring($script:SelectAllTokenPrefix.Length)
+    if ([string]::IsNullOrWhiteSpace($payload)) { return $null }
+
+    $selectedCount = 0
+    $sourceDirectory = $payload
+    $parts = $payload.Split('|', 2)
+    if ($parts.Count -eq 2 -and $parts[0] -match '^\d+$' -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
+        try { $selectedCount = [int]$parts[0] } catch { $selectedCount = 0 }
+        $sourceDirectory = $parts[1]
+    }
+
+    if ([string]::IsNullOrWhiteSpace($sourceDirectory)) { return $null }
+    return [pscustomobject]@{
+        SelectedCount   = $selectedCount
+        SourceDirectory = $sourceDirectory
+    }
 }
 
 function Ensure-StageStateDirectories {
@@ -155,13 +199,17 @@ function Get-AnchorParentPath {
     }
 }
 
-function Get-ExplorerSelectionFromParent {
+function Get-ExplorerSelectionFromParentEnumerated {
     param(
         [string]$ParentPath,
+        [string]$ParentNormalized,
         [string]$AnchorPath
     )
 
     $parentNormalized = Resolve-NormalPath -PathValue $ParentPath
+    if (-not $parentNormalized) {
+        $parentNormalized = $ParentNormalized
+    }
     if (-not $parentNormalized) { return @() }
     $anchorNormalized = Resolve-NormalPath -PathValue $AnchorPath
 
@@ -217,6 +265,7 @@ function Get-ExplorerSelectionFromParent {
                     $folderCountTimer.Stop()
                     $folderCountMs = [int][Math]::Round($folderCountTimer.Elapsed.TotalMilliseconds)
                 }
+
                 $enumTimer = [System.Diagnostics.Stopwatch]::StartNew()
                 $rawSelectedItems = @($doc.SelectedItems())
                 $enumTimer.Stop()
@@ -236,7 +285,7 @@ function Get-ExplorerSelectionFromParent {
                 if ($folderItemCount -ge 0 -and $current.Count -gt 0 -and $current.Count -eq $folderItemCount) {
                     $selectAllHint = $true
                 }
-                Write-StageDebugLog ("WindowScan | Scanned={0} | ParentMatches={1} | MatchFoundMs={2} | COM_EnumMs={3} | RawCount={4} | FolderCount={5} | FolderCountMs={6} | SelectAllHint={7} | AnchorHit={8}" -f $windowsScanned, $parentMatches, $scanMs, $enumMs, $current.Count, $folderItemCount, $folderCountMs, $selectAllHint, $anchorHit)
+                Write-StageDebugLog ("WindowScan | Scanned={0} | ParentMatches={1} | MatchFoundMs={2} | COM_EnumMs={3} | RawCount={4} | FolderCount={5} | FolderCountMs={6} | SelectAllHint={7} | AnchorHit={8} | CountOnlyMode={9}" -f $windowsScanned, $parentMatches, $scanMs, $enumMs, $current.Count, $folderItemCount, $folderCountMs, $selectAllHint, $anchorHit, $false)
 
                 if ($anchorHit -and $current.Count -gt 0) {
                     $scanTimer.Stop()
@@ -257,6 +306,101 @@ function Get-ExplorerSelectionFromParent {
     $scanTimer.Stop()
     Write-StageDebugLog ("WindowScanSummary | Scanned={0} | ParentMatches={1} | SelectedItemsRead={2} | TotalMs={3} | FallbackCount={4}" -f $windowsScanned, $parentMatches, $totalSelectedItemsRead, [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds), $fallbackCount)
     return [string[]]$fallbackResults.ToArray()
+}
+
+function Get-ExplorerSelectionFromParent {
+    param(
+        [string]$ParentPath,
+        [string]$AnchorPath
+    )
+
+    $parentNormalized = Resolve-NormalPath -PathValue $ParentPath
+    if (-not $parentNormalized) { return @() }
+    $anchorNormalized = Resolve-NormalPath -PathValue $AnchorPath
+
+    $fallbackResults = New-Object System.Collections.Generic.List[string]
+    $fallbackCount = -1
+    $windowsScanned = 0
+    $parentMatches = 0
+    $totalSelectedItemsRead = 0
+    $scanTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $matchingWindows = New-Object System.Collections.Generic.List[object]
+
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        foreach ($window in @($shell.Windows())) {
+            $windowsScanned++
+            try {
+                if (-not $window) { continue }
+                $doc = $window.Document
+                if (-not $doc) { continue }
+                $folder = $doc.Folder
+                if (-not $folder) { continue }
+
+                $windowFolderPath = [string]$folder.Self.Path
+                if ([string]::IsNullOrWhiteSpace($windowFolderPath)) { continue }
+
+                $windowMatchesParent = $false
+                if ($windowFolderPath.Equals($ParentPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $windowMatchesParent = $true
+                }
+                else {
+                    $windowFolderNormalized = Resolve-NormalPath -PathValue $windowFolderPath
+                    if (-not $windowFolderNormalized) { continue }
+                    if ($windowFolderNormalized.Equals($parentNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $windowMatchesParent = $true
+                    }
+                }
+                if (-not $windowMatchesParent) { continue }
+
+                $parentMatches++
+                [void]$matchingWindows.Add([pscustomobject]@{
+                    Document         = $doc
+                    Folder           = $folder
+                    WindowFolderPath = $windowFolderPath
+                })
+            }
+            catch { }
+        }
+    }
+    catch { }
+
+    if ($matchingWindows.Count -eq 1) {
+        $singleMatch = $matchingWindows[0]
+        $scanMs = [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds)
+        $folderItemCount = -1
+        $selectedCount = -1
+        $folderCountMs = -1
+        $selectedCountMs = -1
+
+        $folderCountTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        try { $folderItemCount = [int]($singleMatch.Folder.Items().Count) } catch { $folderItemCount = -1 }
+        $folderCountTimer.Stop()
+        $folderCountMs = [int][Math]::Round($folderCountTimer.Elapsed.TotalMilliseconds)
+
+        $selectedCountTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        try { $selectedCount = [int]($singleMatch.Document.SelectedItems().Count) } catch { $selectedCount = -1 }
+        $selectedCountTimer.Stop()
+        $selectedCountMs = [int][Math]::Round($selectedCountTimer.Elapsed.TotalMilliseconds)
+
+        $selectAllHint = ($folderItemCount -gt 0 -and $selectedCount -eq $folderItemCount)
+        Write-StageDebugLog ("WindowScan | Scanned={0} | ParentMatches={1} | MatchFoundMs={2} | COM_EnumMs={3} | RawCount={4} | FolderCount={5} | FolderCountMs={6} | SelectedCountMs={7} | SelectAllHint={8} | AnchorHit={9} | CountOnlyMode={10}" -f $windowsScanned, $parentMatches, $scanMs, 0, $selectedCount, $folderItemCount, $folderCountMs, $selectedCountMs, $selectAllHint, "n/a", $true)
+
+        if ($selectAllHint -and $selectedCount -ge $script:SelectAllTokenThreshold) {
+            $sourcePath = Resolve-NormalPath -PathValue $singleMatch.WindowFolderPath
+            if (-not $sourcePath) { $sourcePath = $singleMatch.WindowFolderPath }
+                $token = New-SelectAllToken -SourceDirectory $sourcePath -SelectedCount $selectedCount
+                if ($token) {
+                    $scanTimer.Stop()
+                    Write-StageDebugLog ("FastPath | SelectAllToken | Count={0} | Threshold={1} | Source='{2}'" -f $selectedCount, $script:SelectAllTokenThreshold, $sourcePath)
+                    Write-StageDebugLog ("WindowScanSummary | Scanned={0} | ParentMatches={1} | SelectedItemsRead={2} | TotalMs={3} | Tokenized={4}" -f $windowsScanned, $parentMatches, 0, [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds), $true)
+                    return @($token)
+            }
+        }
+    }
+
+    # Non-select-all path falls back to stable full enumeration logic.
+    return @(Get-ExplorerSelectionFromParentEnumerated -ParentPath $ParentPath -ParentNormalized $parentNormalized -AnchorPath $AnchorPath)
 }
 
 function Get-UniqueRawPaths {
@@ -297,8 +441,12 @@ function Get-BestSelectionFromParent {
         $selectionCandidates = Get-ExplorerSelectionFromParent -ParentPath $ParentPath -AnchorPath $AnchorPath
         $currentPaths = @(Get-UniqueRawPaths -Candidates $selectionCandidates)
         $currentSignature = [string]::Join("`n", $currentPaths)
+        $hasSelectAllToken = ($currentPaths.Count -eq 1 -and (Test-IsSelectAllToken -PathValue $currentPaths[0]))
         $anchorHitCurrent = $false
-        if (-not [string]::IsNullOrWhiteSpace($normalizedAnchor) -and $currentPaths.Count -gt 0) {
+        if ($hasSelectAllToken) {
+            $anchorHitCurrent = $true
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($normalizedAnchor) -and $currentPaths.Count -gt 0) {
             foreach ($pathValue in $currentPaths) {
                 if ([string]::Equals($pathValue, $normalizedAnchor, [System.StringComparison]::OrdinalIgnoreCase)) {
                     $anchorHitCurrent = $true
@@ -326,6 +474,11 @@ function Get-BestSelectionFromParent {
         }
 
         Write-StageDebugLog ("SelectionAttempt | Attempt={0} | CandidateCount={1} | UniqueCount={2} | BestCount={3} | StableHits={4} | AnchorHit={5} | DurationMs={6}" -f $attempt, @($selectionCandidates).Count, $currentPaths.Count, $bestPaths.Count, $stableHits, $anchorHitCurrent, $attemptMs)
+
+        if ($hasSelectAllToken) {
+            Write-StageDebugLog ("FastPath | SelectAllTokenTrusted | Attempt={0} | Token='{1}'" -f $attempt, $currentPaths[0])
+            break
+        }
 
         if ($attempt -eq 1 -and $currentPaths.Count -ge $script:LargeSelectionTrustThreshold -and $anchorHitCurrent) {
             Write-StageDebugLog ("FastPath | LargeSelectionTrustedFirstScan | Count={0} | Threshold={1}" -f $currentPaths.Count, $script:LargeSelectionTrustThreshold)
@@ -481,8 +634,15 @@ function Save-StagedPaths {
         $persistFileMs = [int][Math]::Round($fileTimer.Elapsed.TotalMilliseconds)
 
         # Keep registry metadata in sync for VBS burst-suppression checks.
+        $registryExpectedCount = $expectedCount
+        if ($expectedCount -eq 1 -and $uniquePaths.Count -eq 1 -and (Test-IsSelectAllToken -PathValue $uniquePaths[0])) {
+            $tokenPayload = Get-SelectAllTokenPayload -TokenPath $uniquePaths[0]
+            if ($tokenPayload -and $tokenPayload.SelectedCount -gt 1) {
+                $registryExpectedCount = [int]$tokenPayload.SelectedCount
+            }
+        }
         $registryTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        Save-StagedPathsToRegistry -CommandName $CommandName -Paths @() -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $expectedCount
+        Save-StagedPathsToRegistry -CommandName $CommandName -Paths @() -AnchorParentNormalized $anchorParentNormalized -SessionId $sessionId -LastStageUtc $lastStageUtc -ExpectedCount $registryExpectedCount
         $registryTimer.Stop()
         $persistRegistryMs = [int][Math]::Round($registryTimer.Elapsed.TotalMilliseconds)
     }
@@ -532,7 +692,15 @@ try {
     $totalStageMs = [int][Math]::Round($stageTimer.Elapsed.TotalMilliseconds)
     Write-StageLog ("OK | mode={0} | backend={1} | anchor='{2}' | selected={3} | total={4} | expected={5} | session={6} | SelectionReadMs={7} | DedupeMs={8} | PersistFileMs={9} | PersistRegistryMs={10} | TotalStageMs={11}" -f $command, $saveResult.Backend, $anchorResolved, $selectedPaths.Count, $saveResult.TotalItems, $saveResult.TotalItems, $saveResult.SessionId, $selectionReadMs, $saveResult.DedupeMs, $saveResult.PersistFileMs, $saveResult.PersistRegistryMs, $totalStageMs)
 
-    if ($selectedPaths.Count -gt 1) {
+    $tokenizedMulti = $false
+    if ($selectedPaths.Count -eq 1 -and (Test-IsSelectAllToken -PathValue $selectedPaths[0])) {
+        $tokenPayload = Get-SelectAllTokenPayload -TokenPath $selectedPaths[0]
+        if ($tokenPayload -and $tokenPayload.SelectedCount -gt 1) {
+            $tokenizedMulti = $true
+        }
+    }
+
+    if ($selectedPaths.Count -gt 1 -or $tokenizedMulti) {
         exit 10
     }
     exit 0
