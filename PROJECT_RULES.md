@@ -127,3 +127,46 @@
 - Validation/tests run:
   - Parse validation `rcopySingle.ps1` μέσω `scriptblock` compile check.
   - Runtime verification pending (small/mid multi-select from same folder).
+
+### 2026-02-13 - Token move duplicate-target cleanup fix
+- Problem:
+  - Σε tokenized `Robo-Cut` (select-all), όταν target είχε ήδη same files, κάποια source files έμεναν πίσω.
+- Root cause:
+  - Το `/MOVE` διαγράφει μόνο files που θεωρήθηκαν copied· same files μπορεί να θεωρηθούν skipped.
+- Guardrail / Rule:
+  - Στο tokenized move path προστίθεται και `/IS` μαζί με canonical `/MOVE`.
+  - Έτσι same-name/same-content files μπαίνουν στο transfer set και καθαρίζονται από source.
+- Files affected:
+  - `rcp.ps1`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Runtime verification pending (select-all cut προς folder με already-existing identical files).
+
+### 2026-02-13 - Token move argument packing hotfix (`/MOVE /IS`)
+- Problem:
+  - Σε select-all token move, ο robocopy έβγαζε `Invalid Parameter ... "/MOVE /IS"` (ExitCode 16).
+- Root cause:
+  - Τα move flags περνούσαν σαν joined string και σε ορισμένα paths αντιμετωπίζονταν ως single argument αντί για ξεχωριστά tokens.
+- Guardrail / Rule:
+  - Προστέθηκε κεντρικό `Get-ModeFlagTokens` normalization helper.
+  - `Invoke-RobocopyTransfer` πλέον δέχεται mode flags ως `object` (string ή array) και κάνει πάντα token split πριν το argument build.
+  - Το token move path περνάει mode flags ως token array (όχι joined string).
+- Files affected:
+  - `rcp.ps1`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` μέσω `Parser::ParseFile` (`OK`).
+  - Runtime verification pending (Robo-Cut select-all token path με same target folder).
+
+### 2026-02-13 - Debug logging call hotfix (`Write-DebugMarker`)
+- Problem:
+  - Σε paste run με `DebugMode=True`, το `rcp.ps1` έσκαγε με `The term 'Write-DebugMarker' is not recognized`.
+- Root cause:
+  - Προστέθηκε debug call σε function που δεν υπάρχει στο `rcp.ps1` (υπάρχει μόνο στο stage script).
+- Guardrail / Rule:
+  - Στο `rcp.ps1` όλα τα debug telemetry writes περνούν από `Write-RunLog` με πρόθεμα `DEBUG |`.
+- Files affected:
+  - `rcp.ps1`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` μέσω `Parser::ParseFile` (`OK`).

@@ -997,11 +997,31 @@ function Exit-Script {
 	exit $Code
 }
 
+function Get-ModeFlagTokens {
+	param([object]$ModeFlag)
+
+	if ($null -eq $ModeFlag) {
+		return @()
+	}
+
+	$rawValues = @($ModeFlag)
+	$tokens = New-Object System.Collections.Generic.List[string]
+	foreach ($rawValue in $rawValues) {
+		if ($null -eq $rawValue) { continue }
+		$parts = @(([string]$rawValue -split '\s+') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+		foreach ($part in $parts) {
+			[void]$tokens.Add($part)
+		}
+	}
+
+	return [string[]]$tokens.ToArray()
+}
+
 function Invoke-RobocopyTransfer {
 	param(
 		[string]$SourcePath,
 		[string]$DestinationPath,
-		[string]$ModeFlag,
+		[object]$ModeFlag,
 		[switch]$MergeMode,
 		[switch]$SourceIsFile,
 		[string[]]$FileFilters
@@ -1036,8 +1056,12 @@ function Invoke-RobocopyTransfer {
 		# In normal mode suppress per-file/per-dir lines for faster large multi-select operations.
 		$robocopyArgs += @("/NFL", "/NDL")
 	}
-	if ($ModeFlag) {
-		$robocopyArgs += $ModeFlag
+	$modeTokens = @(Get-ModeFlagTokens -ModeFlag $ModeFlag)
+	if ($modeTokens.Count -gt 0) {
+		$robocopyArgs += $modeTokens
+	}
+	if ($script:RunSettings.DebugMode) {
+		Write-RunLog ("DEBUG | TransferModeTokens | Count={0} | Tokens='{1}'" -f $modeTokens.Count, ([string]::Join(' ', $modeTokens)))
 	}
 	if ($MergeMode) {
 		$robocopyArgs += @("/XC", "/XN", "/XO")
@@ -1384,24 +1408,32 @@ function Invoke-StagedPathCollection {
 			return @()
 		}
 
-		$modeTokens = @()
-		if ($ModeFlag) {
-			$modeTokens = @(([string]$ModeFlag -split '\s+') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-		}
+		$modeTokens = @(Get-ModeFlagTokens -ModeFlag $ModeFlag)
 
 		$filteredTokens = New-Object System.Collections.Generic.List[string]
+		$tokenSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 		foreach ($token in $modeTokens) {
 			if ($token -match '^(?i)/(MOV|MOVE)$') { continue }
-			[void]$filteredTokens.Add($token)
+			if ($tokenSet.Add($token)) {
+				[void]$filteredTokens.Add($token)
+			}
 		}
 		if ($IsMove) {
-			[void]$filteredTokens.Add('/MOVE')
+			if ($tokenSet.Add('/MOVE')) {
+				[void]$filteredTokens.Add('/MOVE')
+			}
+			# For tokenized select-all moves, include /IS so same-name/same-content files are processed
+			# and removed from source as part of move semantics.
+			if ($tokenSet.Add('/IS')) {
+				[void]$filteredTokens.Add('/IS')
+			}
 		}
 
-		$effectiveModeFlag = [string]::Join(' ', [string[]]$filteredTokens.ToArray())
+		$effectiveModeTokens = [string[]]$filteredTokens.ToArray()
+		$effectiveModeText = [string]::Join(' ', $effectiveModeTokens)
 
-		Write-RunLog ("SelectAll token transfer | Source='{0}' | Dest='{1}' | ModeFlag='{2}' | IsMove={3} | MergeMode={4} | SelectedCount={5}" -f $sourceDirectory, $PasteIntoDirectory, $effectiveModeFlag, $IsMove, [bool]$MergeMode, $tokenSelectedCount)
-		$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeFlag -MergeMode:$MergeMode
+		Write-RunLog ("SelectAll token transfer | Source='{0}' | Dest='{1}' | ModeFlag='{2}' | IsMove={3} | MergeMode={4} | SelectedCount={5}" -f $sourceDirectory, $PasteIntoDirectory, $effectiveModeText, $IsMove, [bool]$MergeMode, $tokenSelectedCount)
+		$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeTokens -MergeMode:$MergeMode
 		if ($tokenResult) {
 			$results += $tokenResult
 		}
