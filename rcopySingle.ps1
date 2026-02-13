@@ -8,7 +8,11 @@ param(
 [Console]::InputEncoding = [Text.UTF8Encoding]::UTF8
 [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
 
-$script:StageLogPath = Join-Path $PSScriptRoot "stage_log.txt"
+$script:LogsDir = Join-Path $PSScriptRoot "logs"
+if (-not (Test-Path -LiteralPath $script:LogsDir)) {
+    New-Item -ItemType Directory -Path $script:LogsDir -Force | Out-Null
+}
+$script:StageLogPath = Join-Path $script:LogsDir "stage_log.txt"
 $script:SelectionRetryCount = 10
 $script:SelectionRetryDelayMs = 45
 $script:SelectionStableHits = 2

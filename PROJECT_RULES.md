@@ -186,3 +186,25 @@
 - Validation/tests run:
   - Parse validation `rcp.ps1` μέσω `Parser::ParseFile` (`OK`).
   - Runtime verification pending (select-all cut από source folder, επιβεβαίωση ότι ο source folder διατηρεί θέση/identity).
+
+### 2026-02-13 - Centralize runtime logs under `logs\`
+- Problem:
+  - Τα runtime logs γράφονταν στο repo root, κάνοντας το workspace noisy και το housekeeping δύσκολο.
+- Root cause:
+  - `rcp.ps1`/`rcopySingle.ps1` είχαν hardcoded log paths στο `$PSScriptRoot` root.
+- Guardrail / Rule:
+  - Όλα τα runtime logs γράφονται πλέον σε dedicated `logs\` folder με auto-create:
+    - `logs\stage_log.txt`
+    - `logs\run_log.txt`
+    - `logs\error_log.txt`
+    - `logs\robocopy_debug.log`
+  - `README.md` και `RoboTune.ps1` δείχνουν πλέον στα νέα log paths.
+- Files affected:
+  - `rcopySingle.ps1`
+  - `rcp.ps1`
+  - `RoboTune.ps1`
+  - `README.md`
+  - `.gitignore`
+  - `PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation (`rcopySingle.ps1`, `rcp.ps1`) via `Parser::ParseFile` (`OK`).

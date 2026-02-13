@@ -340,7 +340,7 @@ while ($true) {
             $config.debug_mode = -not [bool]$config.debug_mode
             Write-Host "debug_mode = $($config.debug_mode)" -ForegroundColor Green
             if ($config.debug_mode) {
-                Write-Host "Debug output will be appended to robocopy_debug.log" -ForegroundColor DarkCyan
+                Write-Host "Debug output will be appended to logs\\robocopy_debug.log" -ForegroundColor DarkCyan
             }
         }
         "8" {

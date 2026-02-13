@@ -1531,9 +1531,13 @@ function Invoke-StagedPathCollection {
 }
 
 # Error log file path
-$errorLogPath = "$PSScriptRoot\error_log.txt"
-$script:RunLogPath = "$PSScriptRoot\run_log.txt"
-$script:RobocopyDebugLogPath = "$PSScriptRoot\robocopy_debug.log"
+$script:LogsDir = Join-Path $PSScriptRoot "logs"
+if (-not (Test-Path -LiteralPath $script:LogsDir)) {
+	New-Item -ItemType Directory -Path $script:LogsDir -Force | Out-Null
+}
+$errorLogPath = Join-Path $script:LogsDir "error_log.txt"
+$script:RunLogPath = Join-Path $script:LogsDir "run_log.txt"
+$script:RobocopyDebugLogPath = Join-Path $script:LogsDir "robocopy_debug.log"
 $tuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
 $script:RoboTuneConfig = Get-TuneConfig -ConfigPath $tuneConfigPath
 $script:StageBackend = Get-StageBackend -Config $script:RoboTuneConfig

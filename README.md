@@ -25,7 +25,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
   - Uses a short session window to append per-item invokes into one staged set.
   - Stores staged source paths in `state\staging\rc.stage.json` / `state\staging\mv.stage.json` using a fast flat `V2` line-based payload (atomic temp-write + rename).
   - Supports fallback backend `registry` via `stage_backend` (RoboTune) or `RCWM_STAGE_BACKEND` env var.
-  - Writes diagnostics/telemetry to `stage_log.txt` (`SelectionReadMs`, `DedupeMs`, `PersistFileMs`, `PersistRegistryMs`, `TotalStageMs`).
+  - Writes diagnostics/telemetry to `logs\stage_log.txt` (`SelectionReadMs`, `DedupeMs`, `PersistFileMs`, `PersistRegistryMs`, `TotalStageMs`).
 - `RoboPaste_Admin.vbs`
   - Elevated launcher for paste.
   - Opens `wt.exe` as admin and runs `rcp.ps1` with `pwsh -NoProfile`.
@@ -105,6 +105,13 @@ If destination folder already exists, script prompts:
 - Windows Terminal (`wt.exe`) for elevated paste flow
 - Write access to script `state` folder (and `HKCU` only if `registry` backend is selected)
 
+## Logs
+
+- `logs\stage_log.txt` (staging telemetry)
+- `logs\run_log.txt` (paste run telemetry)
+- `logs\error_log.txt` (fatal errors)
+- `logs\robocopy_debug.log` (only when debug mode is ON)
+
 ## Important Notes / Limitations
 
 - Copy/Cut are registered on `AllFilesystemObjects` with `MultiSelectModel=Document` for reliable file/folder multi-select.
@@ -168,7 +175,7 @@ Benchmark mode behavior:
 - `OFF`: benchmark metrics disabled and window closes as before.
 
 Debug mode behavior:
-- `ON`: appends detailed robocopy output to `robocopy_debug.log` and mirrors it in the console (`/TEE`).
+- `ON`: appends detailed robocopy output to `logs\robocopy_debug.log` and mirrors it in the console (`/TEE`).
 - adds detailed flags automatically when missing: `/V /TS /FP /BYTES`.
 - `OFF`: no extra debug flags or debug log from this mode.
 
