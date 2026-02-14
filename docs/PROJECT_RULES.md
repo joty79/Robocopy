@@ -307,3 +307,24 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Installer metadata backward-compat hotfix (`Add-Member` upsert)
+- Problem:
+  - `InstallGitHub` failed on old `install-meta.json` with:
+    - `The property 'package_source' cannot be found on this object`.
+- Root cause:
+  - Με `Set-StrictMode`, direct assignment σε νέα metadata fields αποτυγχάνει όταν το loaded JSON object δεν έχει τα νέα properties.
+- Guardrail / Rule:
+  - Metadata writes γίνονται με safe upsert helper:
+    - αν property λείπει -> `Add-Member`
+    - αλλιώς update existing value
+  - Default metadata schema περιλαμβάνει πλέον:
+    - `package_source`
+    - `github_repo`
+    - `github_ref`
+    - `github_zip_url`
+- Files affected:
+  - `Install.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).

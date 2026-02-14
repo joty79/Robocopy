@@ -661,6 +661,10 @@ function Get-DefaultMeta {
         installer_version = $script:InstallerVersion
         install_path = $InstallPath
         source_path = $SourcePath
+        package_source = 'Local'
+        github_repo = ''
+        github_ref = ''
+        github_zip_url = ''
         migration_completed = $false
         migration_utc = $null
         migrated_from = $null
@@ -692,6 +696,21 @@ function Save-InstallMeta {
     $metaPath = Join-Path $InstallRoot 'state\install-meta.json'
     Ensure-Directory -Path (Split-Path -Path $metaPath -Parent)
     $Meta | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $metaPath -Encoding UTF8
+}
+
+function Set-MetaValue {
+    param(
+        [Parameter(Mandatory)][psobject]$Meta,
+        [Parameter(Mandatory)][string]$Name,
+        [AllowNull()][object]$Value
+    )
+    $prop = $Meta.PSObject.Properties[$Name]
+    if (-not $prop) {
+        Add-Member -InputObject $Meta -MemberType NoteProperty -Name $Name -Value $Value
+    }
+    else {
+        $Meta.$Name = $Value
+    }
 }
 
 function Invoke-OneTimeMigration {
@@ -832,20 +851,17 @@ function Invoke-InstallOrUpdate {
 
     Set-UninstallEntry -InstallRoot $InstallPath
 
-    $meta.installer_version = $script:InstallerVersion
-    $meta.install_path = $InstallPath
-    $meta.source_path = if ($PackageSource -eq 'GitHub') {
-        ("github://{0}@{1}" -f $GitHubRepo, $GitHubRef)
-    }
-    else {
-        $SourcePath
-    }
-    $meta.package_source = $PackageSource
-    $meta.github_repo = $GitHubRepo
-    $meta.github_ref = $GitHubRef
-    $meta.github_zip_url = $GitHubZipUrl
-    $meta.last_action = $Mode
-    $meta.installed_utc = (Get-Date).ToUniversalTime().ToString('o')
+    Set-MetaValue -Meta $meta -Name 'installer_version' -Value $script:InstallerVersion
+    Set-MetaValue -Meta $meta -Name 'install_path' -Value $InstallPath
+    Set-MetaValue -Meta $meta -Name 'source_path' -Value (
+        if ($PackageSource -eq 'GitHub') { ("github://{0}@{1}" -f $GitHubRepo, $GitHubRef) } else { $SourcePath }
+    )
+    Set-MetaValue -Meta $meta -Name 'package_source' -Value $PackageSource
+    Set-MetaValue -Meta $meta -Name 'github_repo' -Value $GitHubRepo
+    Set-MetaValue -Meta $meta -Name 'github_ref' -Value $GitHubRef
+    Set-MetaValue -Meta $meta -Name 'github_zip_url' -Value $GitHubZipUrl
+    Set-MetaValue -Meta $meta -Name 'last_action' -Value $Mode
+    Set-MetaValue -Meta $meta -Name 'installed_utc' -Value ((Get-Date).ToUniversalTime().ToString('o'))
     Save-InstallMeta -Meta $meta -InstallRoot $InstallPath
 
     Restart-ExplorerShell
