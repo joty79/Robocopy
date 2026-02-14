@@ -424,3 +424,21 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Installer UX simplification (3-option menu, restart prompt, core file checks)
+- Problem:
+  - Interactive menu είχε διπλές επιλογές (`Install/Update` και `Install/Update GitHub`) που μπέρδευαν το flow.
+  - Explorer restart γινόταν χωρίς explicit prompt.
+  - Δεν υπήρχε άμεσο visual verify των core runtime files μετά το deploy.
+- Root cause:
+  - Legacy menu layout και implicit restart behavior από προηγούμενα installer iterations.
+- Guardrail / Rule:
+  - Interactive menu reduced to `Install`, `Update`, `Uninstall`, `Exit`.
+  - `Install`/`Update` interactive actions use GitHub source by default.
+  - Added explicit user prompt before Explorer restart (unless `-Force` or `-NoExplorerRestart`).
+  - Added `Verify-CoreRuntimeFiles` with green success lines (`[✓]`) and warning tracking on missing files.
+- Files affected:
+  - `Install.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).

@@ -118,18 +118,14 @@ function Show-InteractiveMenu {
         Write-Host ''
         Write-Host '[1] Install' -ForegroundColor Green
         Write-Host '[2] Update' -ForegroundColor Yellow
-        Write-Host '[3] Install (GitHub)' -ForegroundColor Green
-        Write-Host '[4] Update (GitHub)' -ForegroundColor Yellow
-        Write-Host '[5] Uninstall' -ForegroundColor Red
+        Write-Host '[3] Uninstall' -ForegroundColor Red
         Write-Host '[0] Exit' -ForegroundColor Gray
         Write-Host ''
         $choice = (Read-Host 'Select option').Trim()
         switch ($choice) {
             '1' { return 'Install' }
             '2' { return 'Update' }
-            '3' { return 'InstallGitHub' }
-            '4' { return 'UpdateGitHub' }
-            '5' { return 'Uninstall' }
+            '3' { return 'Uninstall' }
             '0' { return 'Exit' }
             default {
                 Write-Host 'Invalid option. Press any key...' -ForegroundColor Red
@@ -909,6 +905,13 @@ function Restart-ExplorerShell {
         Write-InstallerLog -Level WARN -Message 'Explorer restart skipped by -NoExplorerRestart. Restart Explorer manually to refresh menu.'
         return
     }
+    if (-not $Force) {
+        $answer = (Read-Host 'Restart Explorer now to refresh context menus? [Y/n]').Trim().ToLowerInvariant()
+        if ($answer -in @('n', 'no')) {
+            Write-InstallerLog -Level WARN -Message 'Explorer restart skipped by user. Restart Explorer manually to refresh menu.'
+            return
+        }
+    }
     try {
         Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
         Start-Process explorer.exe
@@ -917,6 +920,40 @@ function Restart-ExplorerShell {
     catch {
         Write-InstallerLog -Level WARN -Message 'Explorer restart failed. Please restart Explorer manually.'
     }
+}
+
+function Verify-CoreRuntimeFiles {
+    param([Parameter(Mandatory)][string]$InstallRoot)
+
+    $required = @(
+        'Install.ps1',
+        'rcp.ps1',
+        'rcopySingle.ps1',
+        'RoboCopy_Silent.vbs',
+        'RoboPaste_Admin.vbs',
+        'RoboTune.ps1',
+        'RoboTune.json',
+        'assets\Cut.ico',
+        'assets\Copy.ico',
+        'assets\Paste.ico'
+    )
+
+    $allOk = $true
+    Write-Host ''
+    Write-Host 'Core file verification:' -ForegroundColor Cyan
+    foreach ($relative in $required) {
+        $fullPath = Join-Path $InstallRoot $relative
+        if (Test-Path -LiteralPath $fullPath) {
+            Write-Host ("[✓] {0}" -f $relative) -ForegroundColor Green
+        }
+        else {
+            $allOk = $false
+            Write-Host ("[x] {0}" -f $relative) -ForegroundColor Red
+            Write-InstallerLog -Level WARN -Message ("Core file missing after install/update: {0}" -f $fullPath)
+        }
+    }
+
+    return $allOk
 }
 
 function Invoke-InstallOrUpdate {
@@ -964,6 +1001,7 @@ function Invoke-InstallOrUpdate {
     }
     Patch-SilentWrapper -WrapperPath (Join-Path $InstallPath 'RoboCopy_Silent.vbs') -InstallRoot $InstallPath
     Write-PasteWrapper -WrapperPath (Join-Path $InstallPath 'RoboPaste_Admin.vbs') -InstallRoot $InstallPath
+    $coreFilesOk = Verify-CoreRuntimeFiles -InstallRoot $InstallPath
 
     $cutIcon = Join-Path $InstallPath 'assets\Cut.ico'
     $copyIcon = Join-Path $InstallPath 'assets\Copy.ico'
@@ -1002,7 +1040,7 @@ function Invoke-InstallOrUpdate {
     Restart-ExplorerShell
 
     Write-Host ''
-    if ($script:Warnings.Count -gt 0 -or -not $registryOk) {
+    if ($script:Warnings.Count -gt 0 -or -not $registryOk -or -not $coreFilesOk) {
         Write-Host ("{0} completed with warnings." -f $Mode) -ForegroundColor Yellow
         return 2
     }
@@ -1060,7 +1098,7 @@ function Invoke-Main {
 
     switch ($Action) {
         'Install' {
-            $PackageSource = 'Local'
+            $PackageSource = 'GitHub'
             if (-not (Confirm-Action -Prompt "Install RoboCopy Context Menu to '$InstallPath'?")) {
                 Write-Host 'Cancelled.' -ForegroundColor Yellow
                 return 0
@@ -1068,7 +1106,7 @@ function Invoke-Main {
             return (Invoke-InstallOrUpdate -Mode 'Install')
         }
         'Update' {
-            $PackageSource = 'Local'
+            $PackageSource = 'GitHub'
             if (-not (Confirm-Action -Prompt "Update existing RoboCopy Context Menu at '$InstallPath'?")) {
                 Write-Host 'Cancelled.' -ForegroundColor Yellow
                 return 0
