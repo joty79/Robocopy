@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "installer_version": "1.0.0",
+  "install_path": null,
+  "source_path": null,
+  "migration_completed": false,
+  "migration_utc": null,
+  "migrated_from": null,
+  "last_action": null,
+  "installed_utc": null
+}

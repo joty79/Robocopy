@@ -11,9 +11,14 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 
 ## Components
 
+- `Install.ps1`
+  - Per-user installer (`Install`, `Update`, `Uninstall`).
+  - Installs runtime files into `%LOCALAPPDATA%\RoboCopyContext`.
+  - Writes dynamic context-menu registry entries under `HKCU\Software\Classes\...`.
+  - Registers uninstall entry in Apps & Features (HKCU uninstall key).
 - `RoboCopy_StandAlone.reg`
-  - Registers context-menu entries under `HKEY_CLASSES_ROOT\Directory\...`.
-  - Wires commands to VBS wrappers.
+  - Legacy/manual registry script.
+  - Installer flow is recommended for directory-independent setup.
 - `RoboCopy_Silent.vbs`
   - Hidden launcher for staging (`Robo-Copy` / `Robo-Cut`).
   - Calls `rcopySingle.ps1` with `pwsh.exe -NoProfile`.
@@ -40,6 +45,9 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 
 ## Execution Flow
 
+0. Run installer once:
+   - `pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1`
+   - Default install root: `%LOCALAPPDATA%\RoboCopyContext`
 1. Right-click selected source files/folders -> `Robo-Copy` or `Robo-Cut`.
 2. `RoboCopy_Silent.vbs` acquires staging lock and runs one hidden `rcopySingle.ps1` instance.
    - if the previous stage from the same parent folder was a multi-item selection in the last few seconds, duplicate invokes are skipped.
@@ -102,7 +110,7 @@ If destination folder already exists, script prompts:
 - Windows with `robocopy.exe` (`C:\Windows\System32\robocopy.exe`)
 - PowerShell 7 (`pwsh.exe`)
 - Windows Script Host (`wscript.exe`)
-- Windows Terminal (`wt.exe`) for elevated paste flow
+- Windows Terminal (`wt.exe`) optional (fallback to elevated `pwsh.exe` is supported)
 - Write access to script `state` folder (and `HKCU` only if `registry` backend is selected)
 
 ## Logs
@@ -115,15 +123,16 @@ If destination folder already exists, script prompts:
 ## Important Notes / Limitations
 
 - Copy/Cut are registered on `AllFilesystemObjects` with `MultiSelectModel=Document` for reliable file/folder multi-select.
-- Registry and script paths are hardcoded to `D:\Users\joty79\scripts\Robocopy\...`.
-  - In this repo, files are under `D:\Users\joty79\scripts\MoveTo\Robocopy\...`.
-  - Update `.reg` and `.vbs` paths before using.
+- Installer mode is directory-independent:
+  - commands point to installed scripts under `%LOCALAPPDATA%\RoboCopyContext\...`.
+  - no source-repo absolute path dependency after install.
 - `Robo-Paste` is forced to run elevated (`runas`), so UAC prompt is expected.
 - A script comment notes a potential issue with folder names starting with `0` (registry/value-name edge case).
 
 ## Quick Validation Checklist
 
-1. Apply `.reg` after fixing absolute paths.
+1. Run installer:
+   - `pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1`
 2. Stage one folder with `Robo-Copy`, then paste into test destination.
 3. Stage one file with `Robo-Copy`, then paste into test destination.
 4. Repeat with `Robo-Cut` and confirm source removal (file + folder).

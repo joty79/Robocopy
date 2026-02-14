@@ -225,3 +225,47 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Runtime menu verification: pending (Explorer restart + visual ordering check).
+
+### 2026-02-14 - Installer v1 (per-user, directory-independent)
+- Problem:
+  - Runtime depended on hardcoded source-repo paths, making fresh-machine setup fragile.
+- Root cause:
+  - `.vbs` wrappers and `.reg` commands pointed to fixed `D:\Users\joty79\scripts\Robocopy` paths.
+- Guardrail / Rule:
+  - Install/update/uninstall is handled by `Install.ps1`.
+  - Per-user install root is `%LOCALAPPDATA%\RoboCopyContext`.
+  - Registry writes are dynamic under `HKCU\Software\Classes\...` (cleanup-first + read-back verification).
+  - Missing `wt.exe` must fall back to elevated `pwsh.exe` paste launcher.
+  - One-time migration from legacy root copies config/logs but skips `state\staging\*.stage.json`.
+- Files affected:
+  - `Install.ps1`
+  - `README.md`
+  - `docs/INSTALLER.md`
+  - `state/install-meta.json`
+  - `assets/Cut.ico`
+  - `assets/Copy.ico`
+  - `assets/Paste.ico`
+- Validation/tests run:
+  - Parse validation for `Install.ps1` via `Parser::ParseFile` (`OK`).
+  - Runtime install/update/uninstall matrix: pending.
+
+### 2026-02-14 - Installer registry/powershell hotfix pack
+- Problem:
+  - Installer εμφάνιζε registry warnings/mismatches και σε failure paths εμφανίζονταν key names (`Y_10_RoboCut`) αντί για `MUIVerb`.
+  - Εμφανίστηκαν PowerShell binding errors σε empty-string values κατά το registry write.
+- Root cause:
+  - Stale Robo keys υπήρχαν και σε `HKCR` merged view, όχι μόνο σε `HKCU\Software\Classes`.
+  - Empty-string args (`/d ""`) σε native `reg.exe` invocation περνούσαν σε strict parameter signatures που δεν δέχονταν empty tokens.
+  - Mandatory string params χωρίς `[AllowEmptyString()]` έσκαγαν σε legitimate empty registry values.
+- Guardrail / Rule:
+  - Context-menu cleanup πρέπει να διαγράφει **και** `HKCU` **και** `HKCR` variants.
+  - Για wildcard shell branches (`*\shell`, `Directory\shell`) προτιμάμε `reg.exe` add/query/delete για deterministic behavior.
+  - Empty-compatible parameters δηλώνονται με `[AllowEmptyString()]`.
+  - Native argument lists με empty data χρησιμοποιούν safe literal handling (όχι raw empty token).
+- Files affected:
+  - `Install.ps1`
+  - `docs/PROJECT_RULES.md`
+  - `D:\Users\joty79\.codex\AGENTS.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`OK`).
+  - Registry state verified with direct `reg query` checks on `HKCU`/`HKCR` Robo keys.

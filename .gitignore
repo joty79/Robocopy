@@ -5,3 +5,6 @@ robocopy_debug.log
 logs/*.txt
 logs/*.log
 !logs/.gitkeep
+state/stage.lock
+state/stage.burst
+state/staging/*.stage.json
