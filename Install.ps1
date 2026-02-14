@@ -22,6 +22,8 @@ $script:LegacyRoot = 'D:\Users\joty79\scripts\Robocopy'
 $script:UninstallKeyPath = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\RoboCopyContext'
 $script:Warnings = [System.Collections.Generic.List[string]]::new()
 $script:TempPackageRoots = [System.Collections.Generic.List[string]]::new()
+$script:ResolvedPackageSource = $PackageSource
+$script:ResolvedGitHubCommit = ''
 
 function Resolve-NormalizedPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -92,6 +94,20 @@ function Ensure-Directory {
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -Path $Path -ItemType Directory -Force | Out-Null
     }
+}
+
+function Get-RequiredPackageEntries {
+    @(
+        'Install.ps1',
+        'rcp.ps1',
+        'rcopySingle.ps1',
+        'RoboCopy_Silent.vbs',
+        'RoboPaste_Admin.vbs',
+        'RoboTune.ps1',
+        'assets\Cut.ico',
+        'assets\Copy.ico',
+        'assets\Paste.ico'
+    )
 }
 
 function Show-InteractiveMenu {
@@ -327,7 +343,8 @@ function Write-RoboRegistry {
 
     $cmdCut = "wscript.exe `"$silentWrapper`" mv `"%1`""
     $cmdCopy = "wscript.exe `"$silentWrapper`" `"%1`""
-    $cmdPaste = "wscript.exe `"$pasteWrapper`" `"%V`""
+    $cmdPasteFolder = "wscript.exe `"$pasteWrapper`" `"%1`""
+    $cmdPasteBackground = "wscript.exe `"$pasteWrapper`" `"%V.`""
 
     $fileCut = 'HKCU\Software\Classes\*\shell\Y_10_RoboCut'
     $fileCopy = 'HKCU\Software\Classes\*\shell\Y_11_RoboCopy'
@@ -367,14 +384,14 @@ function Write-RoboRegistry {
     Add-RegStringValue -Key $folderPaste -Name 'Icon' -Value $PasteIcon
     Add-RegStringValue -Key $folderPaste -Name 'HasLUAShield' -Value ''
     Add-RegStringValue -Key $folderPaste -Name 'SeparatorAfter' -Value ''
-    Add-RegDefaultValue -Key "$folderPaste\command" -Value $cmdPaste
+    Add-RegDefaultValue -Key "$folderPaste\command" -Value $cmdPasteFolder
 
     Add-RegStringValue -Key $bgPaste -Name 'MUIVerb' -Value 'Robo-Paste'
     Add-RegStringValue -Key $bgPaste -Name 'Icon' -Value $PasteIcon
     Add-RegStringValue -Key $bgPaste -Name 'HasLUAShield' -Value ''
     Add-RegStringValue -Key $bgPaste -Name 'SeparatorBefore' -Value ''
     Add-RegStringValue -Key $bgPaste -Name 'SeparatorAfter' -Value ''
-    Add-RegDefaultValue -Key "$bgPaste\command" -Value $cmdPaste
+    Add-RegDefaultValue -Key "$bgPaste\command" -Value $cmdPasteBackground
 }
 
 function Verify-RoboRegistry {
@@ -383,15 +400,16 @@ function Verify-RoboRegistry {
     $pasteWrapper = Join-Path $InstallRoot 'RoboPaste_Admin.vbs'
     $cmdCut = "wscript.exe `"$silentWrapper`" mv `"%1`""
     $cmdCopy = "wscript.exe `"$silentWrapper`" `"%1`""
-    $cmdPaste = "wscript.exe `"$pasteWrapper`" `"%V`""
+    $cmdPasteFolder = "wscript.exe `"$pasteWrapper`" `"%1`""
+    $cmdPasteBackground = "wscript.exe `"$pasteWrapper`" `"%V.`""
 
     $checks = @(
         @{ Key = 'HKCU\Software\Classes\*\shell\Y_10_RoboCut'; Name = 'MUIVerb'; Expected = 'Robo-Cut' },
         @{ Key = 'HKCU\Software\Classes\*\shell\Y_10_RoboCut\command'; Name = '(default)'; Expected = $cmdCut },
         @{ Key = 'HKCU\Software\Classes\*\shell\Y_11_RoboCopy\command'; Name = '(default)'; Expected = $cmdCopy },
         @{ Key = 'HKCU\Software\Classes\Directory\shell\Y_12_RoboPaste'; Name = 'MUIVerb'; Expected = 'Robo-Paste' },
-        @{ Key = 'HKCU\Software\Classes\Directory\shell\Y_12_RoboPaste\command'; Name = '(default)'; Expected = $cmdPaste },
-        @{ Key = 'HKCU\Software\Classes\Directory\Background\shell\Y_12_RoboPaste\command'; Name = '(default)'; Expected = $cmdPaste }
+        @{ Key = 'HKCU\Software\Classes\Directory\shell\Y_12_RoboPaste\command'; Name = '(default)'; Expected = $cmdPasteFolder },
+        @{ Key = 'HKCU\Software\Classes\Directory\Background\shell\Y_12_RoboPaste\command'; Name = '(default)'; Expected = $cmdPasteBackground }
     )
 
     $allOk = $true
@@ -532,18 +550,7 @@ function Get-GitHubArchiveUrl {
 
 function Assert-RequiredPackageFiles {
     param([Parameter(Mandatory)][string]$Root)
-    $required = @(
-        'Install.ps1',
-        'rcp.ps1',
-        'rcopySingle.ps1',
-        'RoboCopy_Silent.vbs',
-        'RoboPaste_Admin.vbs',
-        'RoboTune.ps1',
-        'assets\Cut.ico',
-        'assets\Copy.ico',
-        'assets\Paste.ico'
-    )
-    foreach ($entry in $required) {
+    foreach ($entry in (Get-RequiredPackageEntries)) {
         $path = Join-Path $Root $entry
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Downloaded package is missing required file: $entry"
@@ -551,12 +558,69 @@ function Assert-RequiredPackageFiles {
     }
 }
 
+function Test-PackageRootComplete {
+    param([Parameter(Mandatory)][string]$Root)
+
+    foreach ($entry in (Get-RequiredPackageEntries)) {
+        $path = Join-Path $Root $entry
+        if (-not (Test-Path -LiteralPath $path)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-GitHubLatestCommitInfo {
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$Ref
+    )
+
+    $apiUrl = "https://api.github.com/repos/$Repo/commits/$Ref"
+    try {
+        $resp = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'RoboCopyContextInstaller/1.0' } -Method Get
+        if (-not $resp -or [string]::IsNullOrWhiteSpace([string]$resp.sha)) { return $null }
+        return [pscustomobject]@{
+            Sha = [string]$resp.sha
+            ShortSha = ([string]$resp.sha).Substring(0, [Math]::Min(8, ([string]$resp.sha).Length))
+            Date = [string]$resp.commit.committer.date
+            ApiUrl = $apiUrl
+        }
+    }
+    catch {
+        Write-InstallerLog -Level WARN -Message ("Could not query GitHub latest commit ({0}@{1}): {2}" -f $Repo, $Ref, $_.Exception.Message)
+        return $null
+    }
+}
+
 function Resolve-PackageSourceRoot {
+    $script:ResolvedPackageSource = $PackageSource
+    $script:ResolvedGitHubCommit = ''
+    $autoSwitchedFromLocal = $false
+    $localFallbackRoot = $null
+
     if ($PackageSource -eq 'Local') {
-        return $SourcePath
+        if (Test-PackageRootComplete -Root $SourcePath) {
+            return $SourcePath
+        }
+
+        $installRootAsSource = $InstallPath
+        if ((Test-Path -LiteralPath $installRootAsSource) -and (Test-PackageRootComplete -Root $installRootAsSource)) {
+            $localFallbackRoot = $installRootAsSource
+        }
+
+        Write-InstallerLog -Message ("Local source is incomplete ({0}). Switching to GitHub source." -f $SourcePath)
+        $script:ResolvedPackageSource = 'GitHub'
+        $autoSwitchedFromLocal = $true
     }
 
     $url = Get-GitHubArchiveUrl
+    $latestCommit = Get-GitHubLatestCommitInfo -Repo $GitHubRepo -Ref $GitHubRef
+    if ($latestCommit) {
+        $script:ResolvedGitHubCommit = [string]$latestCommit.Sha
+        Write-InstallerLog -Message ("GitHub latest commit: {0} ({1})" -f $latestCommit.ShortSha, $latestCommit.Date)
+    }
+
     $tempRoot = Join-Path $env:TEMP ("RoboCopyContext_pkg_{0}" -f ([guid]::NewGuid().ToString('N')))
     $zipPath = Join-Path $tempRoot 'package.zip'
     $extractPath = Join-Path $tempRoot 'extract'
@@ -569,6 +633,12 @@ function Resolve-PackageSourceRoot {
         Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
     }
     catch {
+        if ($autoSwitchedFromLocal -and $localFallbackRoot) {
+            Write-InstallerLog -Level WARN -Message ("GitHub download failed ({0}). Falling back to existing install source: {1}" -f $_.Exception.Message, $localFallbackRoot)
+            $script:ResolvedPackageSource = 'Local'
+            $script:ResolvedGitHubCommit = ''
+            return $localFallbackRoot
+        }
         throw "Failed to download package from GitHub. URL: $url | Error: $($_.Exception.Message)"
     }
 
@@ -576,6 +646,12 @@ function Resolve-PackageSourceRoot {
         Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
     }
     catch {
+        if ($autoSwitchedFromLocal -and $localFallbackRoot) {
+            Write-InstallerLog -Level WARN -Message ("GitHub extract failed ({0}). Falling back to existing install source: {1}" -f $_.Exception.Message, $localFallbackRoot)
+            $script:ResolvedPackageSource = 'Local'
+            $script:ResolvedGitHubCommit = ''
+            return $localFallbackRoot
+        }
         throw "Failed to extract downloaded package. Error: $($_.Exception.Message)"
     }
 
@@ -595,11 +671,28 @@ function Resolve-PackageSourceRoot {
     }
 
     if (-not $selectedRoot) {
+        if ($autoSwitchedFromLocal -and $localFallbackRoot) {
+            Write-InstallerLog -Level WARN -Message ("Downloaded package root invalid. Falling back to existing install source: {0}" -f $localFallbackRoot)
+            $script:ResolvedPackageSource = 'Local'
+            $script:ResolvedGitHubCommit = ''
+            return $localFallbackRoot
+        }
         throw 'Could not locate valid package root after extraction.'
     }
 
     $packageRoot = $selectedRoot
-    Assert-RequiredPackageFiles -Root $packageRoot
+    try {
+        Assert-RequiredPackageFiles -Root $packageRoot
+    }
+    catch {
+        if ($autoSwitchedFromLocal -and $localFallbackRoot) {
+            Write-InstallerLog -Level WARN -Message ("Downloaded package is incomplete ({0}). Falling back to existing install source: {1}" -f $_.Exception.Message, $localFallbackRoot)
+            $script:ResolvedPackageSource = 'Local'
+            $script:ResolvedGitHubCommit = ''
+            return $localFallbackRoot
+        }
+        throw
+    }
     Write-InstallerLog -Message ("Using downloaded package root: {0}" -f $packageRoot)
     return $packageRoot
 }
@@ -665,6 +758,7 @@ function Get-DefaultMeta {
         github_repo = ''
         github_ref = ''
         github_zip_url = ''
+        github_commit = ''
         migration_completed = $false
         migration_utc = $null
         migrated_from = $null
@@ -686,6 +780,37 @@ function Load-InstallMeta {
         Write-InstallerLog -Level WARN -Message 'Existing install-meta.json is invalid. Reinitializing metadata.'
         return [pscustomobject](Get-DefaultMeta)
     }
+}
+
+function Show-GitHubUpdateStatus {
+    param(
+        [Parameter(Mandatory)][psobject]$Meta,
+        [Parameter(Mandatory)][string]$Mode
+    )
+
+    $latest = Get-GitHubLatestCommitInfo -Repo $GitHubRepo -Ref $GitHubRef
+    if (-not $latest) { return }
+
+    $installedCommit = ''
+    if ($Meta.PSObject.Properties.Name -contains 'github_commit') {
+        $installedCommit = [string]$Meta.github_commit
+    }
+
+    if ([string]::IsNullOrWhiteSpace($installedCommit)) {
+        Write-InstallerLog -Message ("Update check: latest GitHub commit is {0}. No installed commit metadata yet." -f $latest.ShortSha)
+        return
+    }
+
+    $installedShort = $installedCommit.Substring(0, [Math]::Min(8, $installedCommit.Length))
+    if ([string]::Equals($installedCommit, [string]$latest.Sha, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-InstallerLog -Message ("Update check: already up to date ({0})" -f $installedShort)
+        if ($Mode -eq 'Update') {
+            Write-InstallerLog -Message 'Update will continue in repair mode (refresh files/registry).'
+        }
+        return
+    }
+
+    Write-InstallerLog -Message ("Update check: new version available ({0} -> {1})" -f $installedShort, $latest.ShortSha)
 }
 
 function Save-InstallMeta {
@@ -818,6 +943,7 @@ function Invoke-InstallOrUpdate {
     Ensure-Directory -Path (Join-Path $InstallPath 'assets')
 
     $meta = Load-InstallMeta -InstallRoot $InstallPath
+    Show-GitHubUpdateStatus -Meta $meta -Mode $Mode
     Invoke-OneTimeMigration -InstallRoot $InstallPath -Meta $meta
 
     $effectiveSourceRoot = $null
@@ -857,14 +983,18 @@ function Invoke-InstallOrUpdate {
     else {
         $SourcePath
     }
+    if ($script:ResolvedPackageSource -eq 'GitHub') {
+        $metaSourcePath = "github://{0}@{1}" -f $GitHubRepo, $GitHubRef
+    }
 
     Set-MetaValue -Meta $meta -Name 'installer_version' -Value $script:InstallerVersion
     Set-MetaValue -Meta $meta -Name 'install_path' -Value $InstallPath
     Set-MetaValue -Meta $meta -Name 'source_path' -Value $metaSourcePath
-    Set-MetaValue -Meta $meta -Name 'package_source' -Value $PackageSource
+    Set-MetaValue -Meta $meta -Name 'package_source' -Value $script:ResolvedPackageSource
     Set-MetaValue -Meta $meta -Name 'github_repo' -Value $GitHubRepo
     Set-MetaValue -Meta $meta -Name 'github_ref' -Value $GitHubRef
     Set-MetaValue -Meta $meta -Name 'github_zip_url' -Value $GitHubZipUrl
+    Set-MetaValue -Meta $meta -Name 'github_commit' -Value $script:ResolvedGitHubCommit
     Set-MetaValue -Meta $meta -Name 'last_action' -Value $Mode
     Set-MetaValue -Meta $meta -Name 'installed_utc' -Value ((Get-Date).ToUniversalTime().ToString('o'))
     Save-InstallMeta -Meta $meta -InstallRoot $InstallPath

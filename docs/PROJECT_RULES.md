@@ -387,3 +387,40 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation (`rcopySingle.ps1`, `rcp.ps1`) via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Installer hardening: local-source fallback + GitHub update check
+- Problem:
+  - Όταν το `Install.ps1` τρέχει standalone από path χωρίς package files (π.χ. Desktop), έσκαγε με `Missing source file: ...\rcp.ps1`.
+  - Δεν υπήρχε update pre-check πριν από install/update flow.
+- Root cause:
+  - Το `PackageSource=Local` επέστρεφε τυφλά `$SourcePath` χωρίς completeness validation.
+  - Δεν γινόταν compare installed metadata commit vs latest GitHub commit.
+- Guardrail / Rule:
+  - Installer validates local package root completeness.
+  - Αν local source είναι incomplete:
+    - fallback σε existing install root (αν complete), αλλιώς
+    - auto-switch σε GitHub package source.
+  - Added GitHub update check (latest commit) πριν το install/update flow.
+  - Installer stores `github_commit` in `install-meta.json` για επόμενο compare.
+- Files affected:
+  - `Install.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Installer source selection policy update (prefer GitHub on incomplete local source)
+- Problem:
+  - Σε `Action=Install/Update` από standalone script path, το fallback μπορούσε να χρησιμοποιήσει το existing install root ως source και να μην τραβήξει latest GitHub version.
+  - Αυτό οδηγούσε σε "updated with warnings" χωρίς πραγματικό code refresh.
+- Root cause:
+  - Source resolver επέστρεφε early local fallback πριν δοκιμάσει GitHub package fetch.
+- Guardrail / Rule:
+  - Όταν `PackageSource=Local` και το local source είναι incomplete:
+    - προτιμάται GitHub fetch,
+    - local install root χρησιμοποιείται μόνο ως emergency fallback αν αποτύχει GitHub download/extract/validation.
+  - `package_source` metadata γράφει την πραγματική resolved source (`GitHub` ή fallback `Local`).
+- Files affected:
+  - `Install.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
