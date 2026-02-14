@@ -485,15 +485,33 @@ function Deploy-PackageFiles {
         'rcopySingle.ps1',
         'RoboCopy_Silent.vbs',
         'RoboPaste_Admin.vbs',
-        'RoboTune.ps1',
-        'RoboTune.json'
+        'RoboTune.ps1'
     )
 
     foreach ($name in $runtimeFiles) {
         $src = Join-Path $SourceRoot $name
         $dst = Join-Path $InstallRoot $name
-        $preserve = ($name -eq 'RoboTune.json')
-        Copy-FileIfNeeded -Source $src -Destination $dst -PreserveExisting:$preserve
+        Copy-FileIfNeeded -Source $src -Destination $dst
+    }
+
+    $tuneSrc = Join-Path $SourceRoot 'RoboTune.json'
+    $tuneDst = Join-Path $InstallRoot 'RoboTune.json'
+    if (Test-Path -LiteralPath $tuneSrc) {
+        Copy-FileIfNeeded -Source $tuneSrc -Destination $tuneDst -PreserveExisting
+    }
+    elseif (-not (Test-Path -LiteralPath $tuneDst)) {
+        $defaultTune = [ordered]@{
+            benchmark_mode = $true
+            benchmark = $true
+            hold_window = $true
+            debug_mode = $false
+            stage_backend = 'file'
+            default_mt = 32
+            extra_args = @()
+            routes = @()
+        }
+        $defaultTune | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $tuneDst -Encoding UTF8
+        Write-InstallerLog -Level WARN -Message 'RoboTune.json missing in package. Created default config at install path.'
     }
 
     $assetsDir = Join-Path $InstallRoot 'assets'
@@ -521,7 +539,6 @@ function Assert-RequiredPackageFiles {
         'RoboCopy_Silent.vbs',
         'RoboPaste_Admin.vbs',
         'RoboTune.ps1',
-        'RoboTune.json',
         'assets\Cut.ico',
         'assets\Copy.ico',
         'assets\Paste.ico'
@@ -562,12 +579,26 @@ function Resolve-PackageSourceRoot {
         throw "Failed to extract downloaded package. Error: $($_.Exception.Message)"
     }
 
-    $roots = Get-ChildItem -LiteralPath $extractPath -Directory -ErrorAction SilentlyContinue
-    if (-not $roots -or $roots.Count -eq 0) {
+    $roots = @(Get-ChildItem -LiteralPath $extractPath -Directory -ErrorAction SilentlyContinue)
+    if ($roots.Length -eq 0) {
         throw 'Downloaded package extraction produced no root folder.'
     }
 
     $packageRoot = $roots[0].FullName
+    $candidateRoots = @($packageRoot) + @(Get-ChildItem -LiteralPath $extractPath -Directory -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    $selectedRoot = $null
+    foreach ($candidate in $candidateRoots) {
+        if ((Test-Path -LiteralPath (Join-Path $candidate 'Install.ps1')) -and (Test-Path -LiteralPath (Join-Path $candidate 'rcp.ps1'))) {
+            $selectedRoot = $candidate
+            break
+        }
+    }
+
+    if (-not $selectedRoot) {
+        throw 'Could not locate valid package root after extraction.'
+    }
+
+    $packageRoot = $selectedRoot
     Assert-RequiredPackageFiles -Root $packageRoot
     Write-InstallerLog -Message ("Using downloaded package root: {0}" -f $packageRoot)
     return $packageRoot

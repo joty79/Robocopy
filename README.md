@@ -16,6 +16,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
   - Supports package source modes:
     - `Local` (default): deploy from current source folder.
     - `GitHub`: download package zip from repo/ref and deploy/update directly.
+  - If `RoboTune.json` is missing in downloaded package, installer auto-creates a safe default config.
   - Installs runtime files into `%LOCALAPPDATA%\RoboCopyContext`.
   - Writes dynamic context-menu registry entries under `HKCU\Software\Classes\...`.
   - Registers uninstall entry in Apps & Features (HKCU uninstall key).

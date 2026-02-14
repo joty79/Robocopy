@@ -289,3 +289,21 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - GitHub installer robustness hotfix (archive root + optional RoboTune.json)
+- Problem:
+  - `InstallGitHub` έσκαγε με:
+    - `The property 'Count' cannot be found...` (single extracted root object).
+    - `Downloaded package is missing required file: RoboTune.json`.
+- Root cause:
+  - Root detection assumed collection semantics (`.Count`) instead of normalized array.
+  - `RoboTune.json` ήταν treated ως hard-required package file, ενώ μπορεί να λείπει από clean repo states.
+- Guardrail / Rule:
+  - Archive root detection uses normalized array (`@(...)`) and searches candidate extracted folders for a valid package root (`Install.ps1` + `rcp.ps1`).
+  - `RoboTune.json` is optional in source package; installer auto-creates default config if missing.
+- Files affected:
+  - `Install.ps1`
+  - `README.md`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
