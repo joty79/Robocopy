@@ -11,7 +11,8 @@ param(
     [string]$GitHubRef = 'master',
     [string]$GitHubZipUrl = '',
     [switch]$Force,
-    [switch]$NoExplorerRestart
+    [switch]$NoExplorerRestart,
+    [switch]$SkipSelfUpdateCheck
 )
 
 Set-StrictMode -Version Latest
@@ -24,6 +25,7 @@ $script:Warnings = [System.Collections.Generic.List[string]]::new()
 $script:TempPackageRoots = [System.Collections.Generic.List[string]]::new()
 $script:ResolvedPackageSource = $PackageSource
 $script:ResolvedGitHubCommit = ''
+$script:InitialBoundParameters = @{} + $PSBoundParameters
 
 function Resolve-NormalizedPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -96,6 +98,131 @@ function Ensure-Directory {
     }
 }
 
+function Get-ReinvokeArgumentsFromBoundParameters {
+    param([hashtable]$BoundParameters)
+
+    $args = New-Object System.Collections.Generic.List[string]
+    foreach ($key in @($BoundParameters.Keys | Sort-Object)) {
+        if ($key -eq 'SkipSelfUpdateCheck') { continue }
+        $value = $BoundParameters[$key]
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            if ($value.IsPresent) {
+                [void]$args.Add(("-{0}" -f $key))
+            }
+            continue
+        }
+        if ($null -eq $value) { continue }
+        [void]$args.Add(("-{0}" -f $key))
+        [void]$args.Add([string]$value)
+    }
+    return @($args)
+}
+
+function Get-NormalizedTextHash {
+    param([AllowEmptyString()][string]$Text)
+
+    if ($null -eq $Text) { return '' }
+    $normalized = $Text -replace "`r`n", "`n"
+    $normalized = $normalized -replace "`r", "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha.ComputeHash($bytes)
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return ([System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant())
+}
+
+function Invoke-InstallerSelfUpdateCheck {
+    if ($SkipSelfUpdateCheck) { return $false }
+
+    $currentScript = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($currentScript) -and $MyInvocation.MyCommand) {
+        $currentScript = $MyInvocation.MyCommand.Definition
+    }
+    if ([string]::IsNullOrWhiteSpace($currentScript) -or -not (Test-Path -LiteralPath $currentScript)) {
+        return $false
+    }
+
+    $rawUrl = ("https://raw.githubusercontent.com/{0}/{1}/Install.ps1" -f $GitHubRepo, $GitHubRef)
+    $remoteText = $null
+    try {
+        $resp = Invoke-WebRequest -Uri $rawUrl -Headers @{ 'User-Agent' = 'RoboCopyContextInstaller/1.0' } -UseBasicParsing -Method Get
+        $remoteText = [string]$resp.Content
+    }
+    catch {
+        Write-Host ("[!] Self-update check skipped: cannot reach GitHub ({0})" -f $_.Exception.Message) -ForegroundColor Yellow
+        return $false
+    }
+
+    if ([string]::IsNullOrWhiteSpace($remoteText)) {
+        Write-Host '[!] Self-update check skipped: empty remote Install.ps1 payload.' -ForegroundColor Yellow
+        return $false
+    }
+
+    $localText = Get-Content -LiteralPath $currentScript -Raw -Encoding UTF8
+    $localHash = Get-NormalizedTextHash -Text $localText
+    $remoteHash = Get-NormalizedTextHash -Text $remoteText
+
+    if ($localHash -eq $remoteHash) {
+        Write-Host '[✓] Installer self-check: latest Install.ps1 detected.' -ForegroundColor Green
+        return $false
+    }
+
+    Write-Host '[!] Newer Install.ps1 detected on GitHub.' -ForegroundColor Yellow
+    $allowUpdate = $Force
+    if (-not $allowUpdate) {
+        $answer = (Read-Host "Download latest Install.ps1 to this directory and relaunch now? [Y/n]").Trim().ToLowerInvariant()
+        if ($answer -in @('n', 'no')) {
+            Write-Host 'Continuing with current installer.' -ForegroundColor Yellow
+            return $false
+        }
+        $allowUpdate = $true
+    }
+
+    if (-not $allowUpdate) {
+        return $false
+    }
+
+    $scriptDir = Split-Path -Path $currentScript -Parent
+    $preferredPath = Join-Path $scriptDir 'Install.ps1'
+    $tempPath = Join-Path $scriptDir ("Install.ps1.new_{0}" -f ([Guid]::NewGuid().ToString('N')))
+    $launchPath = $preferredPath
+    try {
+        Set-Content -LiteralPath $tempPath -Value $remoteText -Encoding UTF8
+        try {
+            Move-Item -LiteralPath $tempPath -Destination $preferredPath -Force
+        }
+        catch {
+            $launchPath = Join-Path $scriptDir 'Install_latest.ps1'
+            Copy-Item -LiteralPath $tempPath -Destination $launchPath -Force
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            Write-Host ("[!] Could not overwrite Install.ps1, saved latest as: {0}" -f $launchPath) -ForegroundColor Yellow
+        }
+
+        $argList = New-Object System.Collections.Generic.List[string]
+        [void]$argList.Add('-NoProfile')
+        [void]$argList.Add('-ExecutionPolicy')
+        [void]$argList.Add('Bypass')
+        [void]$argList.Add('-File')
+        [void]$argList.Add($launchPath)
+        [void]$argList.Add('-SkipSelfUpdateCheck')
+        foreach ($arg in @(Get-ReinvokeArgumentsFromBoundParameters -BoundParameters $script:InitialBoundParameters)) {
+            [void]$argList.Add($arg)
+        }
+
+        Write-Host ("[✓] Launching latest installer: {0}" -f $launchPath) -ForegroundColor Green
+        Start-Process -FilePath 'pwsh.exe' -ArgumentList @($argList)
+        return $true
+    }
+    catch {
+        Write-Host ("[!] Self-update failed, continuing current installer: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        return $false
+    }
+}
+
 function Get-RequiredPackageEntries {
     @(
         'Install.ps1',
@@ -119,6 +246,8 @@ function Show-InteractiveMenu {
         Write-Host '[1] Install' -ForegroundColor Green
         Write-Host '[2] Update' -ForegroundColor Yellow
         Write-Host '[3] Uninstall' -ForegroundColor Red
+        Write-Host '[4] Open install directory' -ForegroundColor Cyan
+        Write-Host '[5] Launch RoboTune' -ForegroundColor Cyan
         Write-Host '[0] Exit' -ForegroundColor Gray
         Write-Host ''
         $choice = (Read-Host 'Select option').Trim()
@@ -126,6 +255,8 @@ function Show-InteractiveMenu {
             '1' { return 'Install' }
             '2' { return 'Update' }
             '3' { return 'Uninstall' }
+            '4' { return 'OpenInstallDirectory' }
+            '5' { return 'LaunchRoboTune' }
             '0' { return 'Exit' }
             default {
                 Write-Host 'Invalid option. Press any key...' -ForegroundColor Red
@@ -140,6 +271,26 @@ function Confirm-Action {
     if ($Force) { return $true }
     $answer = (Read-Host "$Prompt [y/N]").Trim().ToLowerInvariant()
     $answer -eq 'y'
+}
+
+function Open-InstallDirectory {
+    if (-not (Test-Path -LiteralPath $InstallPath)) {
+        Write-Host ("Install directory not found: {0}" -f $InstallPath) -ForegroundColor Yellow
+        return 1
+    }
+    Start-Process explorer.exe -ArgumentList $InstallPath
+    return 0
+}
+
+function Launch-RoboTune {
+    $tuneScript = Join-Path $InstallPath 'RoboTune.ps1'
+    if (-not (Test-Path -LiteralPath $tuneScript)) {
+        Write-Host ("RoboTune is not installed yet: {0}" -f $tuneScript) -ForegroundColor Yellow
+        return 1
+    }
+
+    Start-Process pwsh.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tuneScript)
+    return 0
 }
 
 function Test-CommandExists {
@@ -1088,6 +1239,10 @@ function Invoke-Uninstall {
 }
 
 function Invoke-Main {
+    if (Invoke-InstallerSelfUpdateCheck) {
+        return 0
+    }
+
     if (-not $script:HasCliArgs) {
         $menuAction = Show-InteractiveMenu
         if ($menuAction -eq 'Exit') {
@@ -1113,28 +1268,18 @@ function Invoke-Main {
             }
             return (Invoke-InstallOrUpdate -Mode 'Update')
         }
-        'InstallGitHub' {
-            $PackageSource = 'GitHub'
-            if (-not (Confirm-Action -Prompt "Install from GitHub '$GitHubRepo' ('$GitHubRef') to '$InstallPath'?")) {
-                Write-Host 'Cancelled.' -ForegroundColor Yellow
-                return 0
-            }
-            return (Invoke-InstallOrUpdate -Mode 'Install')
-        }
-        'UpdateGitHub' {
-            $PackageSource = 'GitHub'
-            if (-not (Confirm-Action -Prompt "Update from GitHub '$GitHubRepo' ('$GitHubRef') at '$InstallPath'?")) {
-                Write-Host 'Cancelled.' -ForegroundColor Yellow
-                return 0
-            }
-            return (Invoke-InstallOrUpdate -Mode 'Update')
-        }
         'Uninstall' {
             if (-not (Confirm-Action -Prompt "Uninstall RoboCopy Context Menu from '$InstallPath'?")) {
                 Write-Host 'Cancelled.' -ForegroundColor Yellow
                 return 0
             }
             return (Invoke-Uninstall)
+        }
+        'OpenInstallDirectory' {
+            return (Open-InstallDirectory)
+        }
+        'LaunchRoboTune' {
+            return (Launch-RoboTune)
         }
         default {
             Write-Host "Unknown action: $Action" -ForegroundColor Red
