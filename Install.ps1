@@ -25,6 +25,7 @@ function Resolve-NormalizedPath {
 $InstallPath = Resolve-NormalizedPath -Path $InstallPath
 $SourcePath = Resolve-NormalizedPath -Path $SourcePath
 $script:InstallerLogPath = Join-Path $InstallPath 'logs\installer.log'
+$script:HasCliArgs = $MyInvocation.BoundParameters.Count -gt 0
 
 function Add-Warning {
     param([Parameter(Mandatory)][string]$Message)
@@ -33,7 +34,12 @@ function Add-Warning {
 
 function Write-Banner {
     param([string]$Title = 'RoboCopy Context Installer')
-    Clear-Host
+    try {
+        Clear-Host
+    }
+    catch {
+        # Non-interactive hosts may not support cursor operations used by Clear-Host.
+    }
     Write-Host '============================================================' -ForegroundColor Cyan
     Write-Host ('  {0}  v{1}' -f $Title, $script:InstallerVersion) -ForegroundColor Cyan
     Write-Host '============================================================' -ForegroundColor Cyan
@@ -730,9 +736,12 @@ function Invoke-Uninstall {
         Remove-UninstallEntry
 
         if (Test-Path -LiteralPath $InstallPath) {
-            $selfPath = $MyInvocation.MyCommand.Path
+            $selfPath = $PSCommandPath
+            if ([string]::IsNullOrWhiteSpace($selfPath) -and $MyInvocation.MyCommand) {
+                $selfPath = $MyInvocation.MyCommand.Definition
+            }
             $installRootNorm = Resolve-NormalizedPath -Path $InstallPath
-            $selfNorm = Resolve-NormalizedPath -Path $selfPath
+            $selfNorm = if ([string]::IsNullOrWhiteSpace($selfPath)) { '' } else { Resolve-NormalizedPath -Path $selfPath }
             if ($selfNorm.StartsWith($installRootNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $cmd = "/c ping 127.0.0.1 -n 3 >nul & rmdir /s /q `"$InstallPath`""
                 Start-Process -FilePath 'cmd.exe' -ArgumentList $cmd -WindowStyle Hidden
@@ -756,7 +765,7 @@ function Invoke-Uninstall {
 }
 
 function Invoke-Main {
-    if ($PSBoundParameters.Count -eq 0) {
+    if (-not $script:HasCliArgs) {
         $menuAction = Show-InteractiveMenu
         if ($menuAction -eq 'Exit') {
             return 0
