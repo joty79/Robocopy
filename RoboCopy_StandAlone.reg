@@ -15,42 +15,83 @@ Windows Registry Editor Version 5.00
 [-HKEY_CLASSES_ROOT\Directory\Background\shell\rpaste]
 [-HKEY_CLASSES_ROOT\Directory\shell\rpaste]
 
-; -------- RE-ADD MINIMAL SET --------
+[-HKEY_CURRENT_USER\Software\Classes\AllFilesystemObjects\shell\rcopy]
+[-HKEY_CURRENT_USER\Software\Classes\AllFilesystemObjects\shell\mvdir]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\rpaste]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\rpaste]
 
-; 1. Robo-Copy (SILENT via VBS + pwsh) - files and folders
-[HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\rcopy]
-@="Robo-Copy"
+[-HKEY_CURRENT_USER\Software\Classes\AllFilesystemObjects\shell\Y_10_RoboCut]
+[-HKEY_CURRENT_USER\Software\Classes\AllFilesystemObjects\shell\Y_11_RoboCopy]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_10_RoboCut]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_11_RoboCopy]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_12_RoboPaste]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_12_RoboPaste]
+[-HKEY_CURRENT_USER\Software\Classes\*\shell\Y_10_RoboCut]
+[-HKEY_CURRENT_USER\Software\Classes\*\shell\Y_11_RoboCopy]
+
+; -------- FILE CONTEXT (*) --------
+; Files only: Cut/Copy
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Y_10_RoboCut]
+"MUIVerb"="Robo-Cut"
+"NoWorkingDirectory"=""
+"MultiSelectModel"="Document"
+"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Cut.ico"
+"SeparatorBefore"=""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Y_10_RoboCut\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Y_11_RoboCopy]
+"MUIVerb"="Robo-Copy"
+"NoWorkingDirectory"=""
+"MultiSelectModel"="Document"
+"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Copy.ico"
+"SeparatorAfter"=""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Y_11_RoboCopy\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" \"%1\""
+
+; -------- FOLDER CONTEXT (Directory) --------
+; Folders: Cut + Copy + Paste grouped together
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_10_RoboCut]
+"MUIVerb"="Robo-Cut"
+"NoWorkingDirectory"=""
+"MultiSelectModel"="Document"
+"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Cut.ico"
+"SeparatorBefore"=""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_10_RoboCut\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_11_RoboCopy]
+"MUIVerb"="Robo-Copy"
 "NoWorkingDirectory"=""
 "MultiSelectModel"="Document"
 "Icon"="d:\\Users\\joty79\\Documents\\Icons\\Copy.ico"
 
-[HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\rcopy\command]
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_11_RoboCopy\command]
 @="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" \"%1\""
 
-; 2. Robo-Cut (SILENT via VBS + pwsh) - files and folders
-[HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\mvdir]
-@="Robo-Cut"
-"NoWorkingDirectory"=""
-"MultiSelectModel"="Document"
-"Icon"="d:\\Users\\joty79\\Documents\\Icons\\Cut.ico"
-
-[HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\mvdir\command]
-@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv \"%1\""
-
-; 3. Robo-Paste - Background (ADMIN via VBS + Windows Terminal)
-[HKEY_CLASSES_ROOT\Directory\Background\shell\rpaste]
-@="Robo-Paste"
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_12_RoboPaste]
+"MUIVerb"="Robo-Paste"
 "Icon"="d:\\Users\\joty79\\Documents\\Icons\\Paste.ico"
 "HasLUAShield"=""
+"SeparatorAfter"=""
 
-[HKEY_CLASSES_ROOT\Directory\Background\shell\rpaste\command]
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_12_RoboPaste\command]
 @="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboPaste_Admin.vbs\" \"%V\""
 
-; 4. Robo-Paste - Directly on Folder (ADMIN via VBS + Windows Terminal)
-[HKEY_CLASSES_ROOT\Directory\shell\rpaste]
-@="Robo-Paste"
+; -------- FOLDER BACKGROUND CONTEXT (Directory\Background) --------
+; Paste only in empty space/background
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_12_RoboPaste]
+"MUIVerb"="Robo-Paste"
 "Icon"="d:\\Users\\joty79\\Documents\\Icons\\Paste.ico"
 "HasLUAShield"=""
+"SeparatorBefore"=""
+"SeparatorAfter"=""
 
-[HKEY_CLASSES_ROOT\Directory\shell\rpaste\command]
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_12_RoboPaste\command]
 @="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboPaste_Admin.vbs\" \"%V\""

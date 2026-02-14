@@ -208,3 +208,20 @@
   - `PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation (`rcopySingle.ps1`, `rcp.ps1`) via `Parser::ParseFile` (`OK`).
+
+### 2026-02-14 - Context menu grouping fix (`Robo-Cut/Copy/Paste`)
+- Problem:
+  - `Robo-Cut`/`Robo-Copy` και `Robo-Paste` εμφανίζονταν σε διαφορετικά blocks, άρα το group ordering ήταν ασταθές.
+- Root cause:
+  - Τα verbs ήταν split σε διαφορετικά registry parent branches (`AllFilesystemObjects` vs `Directory`).
+- Guardrail / Rule:
+  - Για files: verbs στο `HKCU\Software\Classes\*\shell`.
+  - Για folders: related verbs στο ίδιο `HKCU\Software\Classes\Directory\shell`.
+  - Για `Directory\Background`: μόνο `Paste`.
+  - Πάντα cleanup των παλιών Robo keys πριν νέο import.
+- Files affected:
+  - `RoboCopy_StandAlone.reg`
+  - `docs/CONTEXT_MENU_GROUPING_FIX.md`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Runtime menu verification: pending (Explorer restart + visual ordering check).
