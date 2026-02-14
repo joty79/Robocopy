@@ -269,3 +269,23 @@
 - Validation/tests run:
   - Parse validation `Install.ps1` via `Parser::ParseFile` (`OK`).
   - Registry state verified with direct `reg query` checks on `HKCU`/`HKCR` Robo keys.
+
+### 2026-02-14 - Installer GitHub package source mode
+- Problem:
+  - Χρειαζόμαστε install/update χωρίς local source checkout, απευθείας από remote repo.
+- Root cause:
+  - Ο installer v1 βασιζόταν μόνο σε local `SourcePath`.
+- Guardrail / Rule:
+  - Νέο package source model στο `Install.ps1`:
+    - `Local` (default) -> deploy from local source.
+    - `GitHub` -> download archive (repo/ref ή explicit zip URL), extract σε temp root, validate required runtime files, deploy, cleanup temp.
+  - Νέα actions:
+    - `InstallGitHub`
+    - `UpdateGitHub`
+  - Interactive menu περιλαμβάνει και GitHub install/update επιλογές.
+- Files affected:
+  - `Install.ps1`
+  - `README.md`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).

@@ -1,10 +1,15 @@
 #requires -version 7.0
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Update', 'Uninstall')]
+    [ValidateSet('Install', 'Update', 'Uninstall', 'InstallGitHub', 'UpdateGitHub')]
     [string]$Action = 'Install',
     [string]$InstallPath = [System.IO.Path]::Combine($env:LOCALAPPDATA, 'RoboCopyContext'),
     [string]$SourcePath = $PSScriptRoot,
+    [ValidateSet('Local', 'GitHub')]
+    [string]$PackageSource = 'Local',
+    [string]$GitHubRepo = 'joty79/Robocopy',
+    [string]$GitHubRef = 'master',
+    [string]$GitHubZipUrl = '',
     [switch]$Force,
     [switch]$NoExplorerRestart
 )
@@ -16,6 +21,7 @@ $script:InstallerVersion = '1.0.0'
 $script:LegacyRoot = 'D:\Users\joty79\scripts\Robocopy'
 $script:UninstallKeyPath = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\RoboCopyContext'
 $script:Warnings = [System.Collections.Generic.List[string]]::new()
+$script:TempPackageRoots = [System.Collections.Generic.List[string]]::new()
 
 function Resolve-NormalizedPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -96,14 +102,18 @@ function Show-InteractiveMenu {
         Write-Host ''
         Write-Host '[1] Install' -ForegroundColor Green
         Write-Host '[2] Update' -ForegroundColor Yellow
-        Write-Host '[3] Uninstall' -ForegroundColor Red
+        Write-Host '[3] Install (GitHub)' -ForegroundColor Green
+        Write-Host '[4] Update (GitHub)' -ForegroundColor Yellow
+        Write-Host '[5] Uninstall' -ForegroundColor Red
         Write-Host '[0] Exit' -ForegroundColor Gray
         Write-Host ''
         $choice = (Read-Host 'Select option').Trim()
         switch ($choice) {
             '1' { return 'Install' }
             '2' { return 'Update' }
-            '3' { return 'Uninstall' }
+            '3' { return 'InstallGitHub' }
+            '4' { return 'UpdateGitHub' }
+            '5' { return 'Uninstall' }
             '0' { return 'Exit' }
             default {
                 Write-Host 'Invalid option. Press any key...' -ForegroundColor Red
@@ -495,6 +505,74 @@ function Deploy-PackageFiles {
     }
 }
 
+function Get-GitHubArchiveUrl {
+    if (-not [string]::IsNullOrWhiteSpace($GitHubZipUrl)) {
+        return $GitHubZipUrl.Trim()
+    }
+    return ("https://codeload.github.com/{0}/zip/refs/heads/{1}" -f $GitHubRepo, $GitHubRef)
+}
+
+function Assert-RequiredPackageFiles {
+    param([Parameter(Mandatory)][string]$Root)
+    $required = @(
+        'Install.ps1',
+        'rcp.ps1',
+        'rcopySingle.ps1',
+        'RoboCopy_Silent.vbs',
+        'RoboPaste_Admin.vbs',
+        'RoboTune.ps1',
+        'RoboTune.json',
+        'assets\Cut.ico',
+        'assets\Copy.ico',
+        'assets\Paste.ico'
+    )
+    foreach ($entry in $required) {
+        $path = Join-Path $Root $entry
+        if (-not (Test-Path -LiteralPath $path)) {
+            throw "Downloaded package is missing required file: $entry"
+        }
+    }
+}
+
+function Resolve-PackageSourceRoot {
+    if ($PackageSource -eq 'Local') {
+        return $SourcePath
+    }
+
+    $url = Get-GitHubArchiveUrl
+    $tempRoot = Join-Path $env:TEMP ("RoboCopyContext_pkg_{0}" -f ([guid]::NewGuid().ToString('N')))
+    $zipPath = Join-Path $tempRoot 'package.zip'
+    $extractPath = Join-Path $tempRoot 'extract'
+    Ensure-Directory -Path $tempRoot
+    Ensure-Directory -Path $extractPath
+    $script:TempPackageRoots.Add($tempRoot) | Out-Null
+
+    Write-InstallerLog -Message ("Downloading package: {0}" -f $url)
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+    }
+    catch {
+        throw "Failed to download package from GitHub. URL: $url | Error: $($_.Exception.Message)"
+    }
+
+    try {
+        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+    }
+    catch {
+        throw "Failed to extract downloaded package. Error: $($_.Exception.Message)"
+    }
+
+    $roots = Get-ChildItem -LiteralPath $extractPath -Directory -ErrorAction SilentlyContinue
+    if (-not $roots -or $roots.Count -eq 0) {
+        throw 'Downloaded package extraction produced no root folder.'
+    }
+
+    $packageRoot = $roots[0].FullName
+    Assert-RequiredPackageFiles -Root $packageRoot
+    Write-InstallerLog -Message ("Using downloaded package root: {0}" -f $packageRoot)
+    return $packageRoot
+}
+
 function Patch-SilentWrapper {
     param(
         [Parameter(Mandatory)][string]$WrapperPath,
@@ -673,6 +751,7 @@ function Invoke-InstallOrUpdate {
     Initialize-InstallerLog
     Write-InstallerLog -Message ("Starting {0} to {1}" -f $Mode, $InstallPath)
     Write-InstallerLog -Message ("Installer script path: {0}" -f $PSCommandPath)
+    Write-InstallerLog -Message ("Package source mode: {0}" -f $PackageSource)
     Write-InstallerLog -Message ("Source path: {0}" -f $SourcePath)
 
     $preflight = Invoke-Preflight
@@ -691,7 +770,22 @@ function Invoke-InstallOrUpdate {
     $meta = Load-InstallMeta -InstallRoot $InstallPath
     Invoke-OneTimeMigration -InstallRoot $InstallPath -Meta $meta
 
-    Deploy-PackageFiles -SourceRoot $SourcePath -InstallRoot $InstallPath
+    $effectiveSourceRoot = $null
+    try {
+        $effectiveSourceRoot = Resolve-PackageSourceRoot
+        Deploy-PackageFiles -SourceRoot $effectiveSourceRoot -InstallRoot $InstallPath
+    }
+    finally {
+        foreach ($temp in $script:TempPackageRoots) {
+            try {
+                if (Test-Path -LiteralPath $temp) {
+                    Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            catch {}
+        }
+        $script:TempPackageRoots.Clear()
+    }
     Patch-SilentWrapper -WrapperPath (Join-Path $InstallPath 'RoboCopy_Silent.vbs') -InstallRoot $InstallPath
     Write-PasteWrapper -WrapperPath (Join-Path $InstallPath 'RoboPaste_Admin.vbs') -InstallRoot $InstallPath
 
@@ -709,7 +803,16 @@ function Invoke-InstallOrUpdate {
 
     $meta.installer_version = $script:InstallerVersion
     $meta.install_path = $InstallPath
-    $meta.source_path = $SourcePath
+    $meta.source_path = if ($PackageSource -eq 'GitHub') {
+        ("github://{0}@{1}" -f $GitHubRepo, $GitHubRef)
+    }
+    else {
+        $SourcePath
+    }
+    $meta.package_source = $PackageSource
+    $meta.github_repo = $GitHubRepo
+    $meta.github_ref = $GitHubRef
+    $meta.github_zip_url = $GitHubZipUrl
     $meta.last_action = $Mode
     $meta.installed_utc = (Get-Date).ToUniversalTime().ToString('o')
     Save-InstallMeta -Meta $meta -InstallRoot $InstallPath
@@ -775,6 +878,7 @@ function Invoke-Main {
 
     switch ($Action) {
         'Install' {
+            $PackageSource = 'Local'
             if (-not (Confirm-Action -Prompt "Install RoboCopy Context Menu to '$InstallPath'?")) {
                 Write-Host 'Cancelled.' -ForegroundColor Yellow
                 return 0
@@ -782,7 +886,24 @@ function Invoke-Main {
             return (Invoke-InstallOrUpdate -Mode 'Install')
         }
         'Update' {
+            $PackageSource = 'Local'
             if (-not (Confirm-Action -Prompt "Update existing RoboCopy Context Menu at '$InstallPath'?")) {
+                Write-Host 'Cancelled.' -ForegroundColor Yellow
+                return 0
+            }
+            return (Invoke-InstallOrUpdate -Mode 'Update')
+        }
+        'InstallGitHub' {
+            $PackageSource = 'GitHub'
+            if (-not (Confirm-Action -Prompt "Install from GitHub '$GitHubRepo' ('$GitHubRef') to '$InstallPath'?")) {
+                Write-Host 'Cancelled.' -ForegroundColor Yellow
+                return 0
+            }
+            return (Invoke-InstallOrUpdate -Mode 'Install')
+        }
+        'UpdateGitHub' {
+            $PackageSource = 'GitHub'
+            if (-not (Confirm-Action -Prompt "Update from GitHub '$GitHubRepo' ('$GitHubRef') at '$InstallPath'?")) {
                 Write-Host 'Cancelled.' -ForegroundColor Yellow
                 return 0
             }

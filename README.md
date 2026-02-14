@@ -13,6 +13,9 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 
 - `Install.ps1`
   - Per-user installer (`Install`, `Update`, `Uninstall`).
+  - Supports package source modes:
+    - `Local` (default): deploy from current source folder.
+    - `GitHub`: download package zip from repo/ref and deploy/update directly.
   - Installs runtime files into `%LOCALAPPDATA%\RoboCopyContext`.
   - Writes dynamic context-menu registry entries under `HKCU\Software\Classes\...`.
   - Registers uninstall entry in Apps & Features (HKCU uninstall key).
@@ -47,6 +50,12 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
 
 0. Run installer once:
    - `pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1`
+   - or install directly from GitHub:
+     - `pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -Action InstallGitHub -Force`
+     - optional overrides:
+       - `-GitHubRepo "joty79/Robocopy"`
+       - `-GitHubRef "master"`
+       - `-GitHubZipUrl "https://..."` (explicit archive URL)
    - Default install root: `%LOCALAPPDATA%\RoboCopyContext`
 1. Right-click selected source files/folders -> `Robo-Copy` or `Robo-Cut`.
 2. `RoboCopy_Silent.vbs` acquires staging lock and runs one hidden `rcopySingle.ps1` instance.
@@ -133,6 +142,9 @@ If destination folder already exists, script prompts:
 
 1. Run installer:
    - `pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1`
+   - GitHub install/update:
+     - `pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -Action InstallGitHub -Force`
+     - `pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -Action UpdateGitHub -Force`
 2. Stage one folder with `Robo-Copy`, then paste into test destination.
 3. Stage one file with `Robo-Copy`, then paste into test destination.
 4. Repeat with `Robo-Cut` and confirm source removal (file + folder).
