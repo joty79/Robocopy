@@ -328,3 +328,17 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Installer runtime fix for metadata source_path assignment
+- Problem:
+  - `InstallGitHub` έσκαγε runtime με:
+    - `The term 'if' is not recognized ...`
+- Root cause:
+  - `if` block χρησιμοποιήθηκε inline ως argument expression σε `Set-MetaValue` call, αντί για precomputed variable.
+- Guardrail / Rule:
+  - Complex conditional values για function args υπολογίζονται πρώτα σε local variable και μετά περνιούνται ως `-Value`.
+- Files affected:
+  - `Install.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).

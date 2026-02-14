@@ -851,11 +851,16 @@ function Invoke-InstallOrUpdate {
 
     Set-UninstallEntry -InstallRoot $InstallPath
 
+    $metaSourcePath = if ($PackageSource -eq 'GitHub') {
+        "github://{0}@{1}" -f $GitHubRepo, $GitHubRef
+    }
+    else {
+        $SourcePath
+    }
+
     Set-MetaValue -Meta $meta -Name 'installer_version' -Value $script:InstallerVersion
     Set-MetaValue -Meta $meta -Name 'install_path' -Value $InstallPath
-    Set-MetaValue -Meta $meta -Name 'source_path' -Value (
-        if ($PackageSource -eq 'GitHub') { ("github://{0}@{1}" -f $GitHubRepo, $GitHubRef) } else { $SourcePath }
-    )
+    Set-MetaValue -Meta $meta -Name 'source_path' -Value $metaSourcePath
     Set-MetaValue -Meta $meta -Name 'package_source' -Value $PackageSource
     Set-MetaValue -Meta $meta -Name 'github_repo' -Value $GitHubRepo
     Set-MetaValue -Meta $meta -Name 'github_ref' -Value $GitHubRef
