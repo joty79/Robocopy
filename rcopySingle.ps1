@@ -35,12 +35,35 @@ function Write-StageLog {
     catch { }
 }
 
-function Resolve-NormalPath {
+function Normalize-ContextPathValue {
     param([string]$PathValue)
 
     if ([string]::IsNullOrWhiteSpace($PathValue)) { return $null }
+    $candidate = $PathValue.Trim()
+    if ($candidate.Length -ge 2 -and $candidate.StartsWith('"') -and $candidate.EndsWith('"')) {
+        $candidate = $candidate.Substring(1, $candidate.Length - 2)
+    }
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
+
+    if ($candidate -match '^[A-Za-z]:$') {
+        return ($candidate + '\')
+    }
+    if ($candidate -match '^[A-Za-z]:\\\.$') {
+        return ($candidate.Substring(0, 2) + '\')
+    }
+    if ($candidate.EndsWith('\.')) {
+        return $candidate.Substring(0, $candidate.Length - 1)
+    }
+    return $candidate
+}
+
+function Resolve-NormalPath {
+    param([string]$PathValue)
+
+    $candidate = Normalize-ContextPathValue -PathValue $PathValue
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
     try {
-        return (Resolve-Path -LiteralPath $PathValue -ErrorAction Stop).ProviderPath
+        return (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).ProviderPath
     }
     catch {
         return $null
@@ -50,13 +73,7 @@ function Resolve-NormalPath {
 function Normalize-RawPathValue {
     param([string]$PathValue)
 
-    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $null }
-    $candidate = $PathValue.Trim()
-    if ($candidate.Length -ge 2 -and $candidate.StartsWith('"') -and $candidate.EndsWith('"')) {
-        $candidate = $candidate.Substring(1, $candidate.Length - 2)
-    }
-    if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
-    return $candidate
+    return (Normalize-ContextPathValue -PathValue $PathValue)
 }
 
 function Test-IsSelectAllToken {

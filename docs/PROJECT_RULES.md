@@ -342,3 +342,48 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Critical paste-target safety fix for drive roots (`C:\`)
+- Problem:
+  - Σε paste προς drive root, target μπορούσε να γίνει drive-relative (`C:`) και να resolve σε `C:\Users\...`, με high-risk wrong destination behavior.
+- Root cause:
+  - Context-menu argument handling για folder/background paste δεν κάλυπτε με ασφάλεια τα root-drive cases.
+  - Το paste engine δε normalizαρε πάντα drive-relative/root token forms πριν το `Test-Path`.
+- Guardrail / Rule:
+  - Registry commands:
+    - folder paste uses `%1`
+    - background paste uses `%V.` (safe root token form)
+  - `rcp.ps1` κάνει explicit normalization πριν validation:
+    - `C:` -> `C:\`
+    - `C:\.` -> `C:\`
+    - `...\.` -> `...\`
+- Files affected:
+  - `Install.ps1`
+  - `rcp.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation (`Install.ps1`, `rcp.ps1`) via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Critical hardening for staging + move safety (drive-relative source and protected roots)
+- Problem:
+  - Staging μπορούσε να resolve drive-relative anchor forms (`C:`) σε user-profile paths μέσω `Resolve-Path`, και σε rare fallback cases να stage λάθος source.
+  - Paste move flow δεν είχε effective guardrail για protected roots, άρα ένα λάθος staged path μπορούσε να προχωρήσει σε transfer.
+- Root cause:
+  - Path normalization δεν ήταν centralized στο stage script (`rcopySingle.ps1`) πριν από `Resolve-Path`.
+  - Move safety checks δεν υπήρχαν στο effective transfer list του paste pipeline.
+- Guardrail / Rule:
+  - Introduce shared context-path normalization in both stage and paste engines:
+    - `C:` -> `C:\`
+    - `C:\.` -> `C:\`
+    - `...\.` -> `...\`
+  - Apply normalization before `Resolve-Path` in `rcopySingle.ps1`.
+  - Enforce move safety filtering in `rcp.ps1`:
+    - block exact protected roots (`SystemDrive`, `SystemRoot`, `USERPROFILE`, `Program Files`, `ProgramData`).
+    - blocked paths are removed from effective transfer list.
+    - if all move items are blocked, abort with explicit safety error.
+- Files affected:
+  - `rcopySingle.ps1`
+  - `rcp.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation (`rcopySingle.ps1`, `rcp.ps1`) via `Parser::ParseFile` (`PARSE_OK`).

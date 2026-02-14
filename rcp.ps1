@@ -36,7 +36,68 @@ $script:StageResolveMaxTimeoutMs = 12000
 $script:StageBurstStaleSeconds = 6
 $script:StageResolvePollMs = 80
 $script:SelectAllTokenPrefix = "?WILDCARD?|"
+$script:ProtectedMoveRoots = @(
+	("{0}\" -f $env:SystemDrive),
+	$env:SystemRoot,
+	$env:USERPROFILE,
+	$env:ProgramFiles,
+	${env:ProgramFiles(x86)},
+	$env:ProgramData
+) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
+function Normalize-ContextPathValue {
+	param([string]$PathValue)
+
+	if ([string]::IsNullOrWhiteSpace($PathValue)) { return $null }
+	$candidate = $PathValue.Trim()
+	if ($candidate.Length -ge 2 -and $candidate.StartsWith('"') -and $candidate.EndsWith('"')) {
+		$candidate = $candidate.Substring(1, $candidate.Length - 2)
+	}
+	if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
+
+	if ($candidate -match '^[A-Za-z]:$') {
+		return ($candidate + '\')
+	}
+	if ($candidate -match '^[A-Za-z]:\\\.$') {
+		return ($candidate.Substring(0, 2) + '\')
+	}
+	if ($candidate.EndsWith('\.')) {
+		return $candidate.Substring(0, $candidate.Length - 1)
+	}
+	return $candidate
+}
+
+function Get-PathForSafetyCompare {
+	param([string]$PathValue)
+
+	$candidate = Normalize-ContextPathValue -PathValue $PathValue
+	if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
+	try {
+		$candidate = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).ProviderPath
+	}
+	catch { }
+
+	if ($candidate -match '^[A-Za-z]:\\$') {
+		return ($candidate.Substring(0, 1).ToUpperInvariant() + ":\")
+	}
+	return $candidate.TrimEnd('\')
+}
+
+function Test-IsProtectedMovePath {
+	param([string]$PathValue)
+
+	$candidate = Get-PathForSafetyCompare -PathValue $PathValue
+	if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
+
+	foreach ($protected in @($script:ProtectedMoveRoots)) {
+		$target = Get-PathForSafetyCompare -PathValue $protected
+		if ([string]::IsNullOrWhiteSpace($target)) { continue }
+		if ([string]::Equals($candidate, $target, [System.StringComparison]::OrdinalIgnoreCase)) {
+			return $true
+		}
+	}
+	return $false
+}
 
 function NoListAvailable {
 	Remove-StageBurstMarker
@@ -1579,7 +1640,10 @@ try {
 	if ($args.Count -lt 3 -or [string]::IsNullOrWhiteSpace([string]$args[2])) {
 		throw "Paste target path is missing."
 	}
-	$pasteIntoDirectory = [string]$args[2]
+	$pasteIntoDirectory = Normalize-ContextPathValue -PathValue ([string]$args[2])
+	if ([string]::IsNullOrWhiteSpace($pasteIntoDirectory)) {
+		throw "Paste target path is missing."
+	}
 	if (-not (Test-Path -LiteralPath $pasteIntoDirectory)) {
 		throw "Paste target path does not exist: $pasteIntoDirectory"
 	}
@@ -1645,19 +1709,45 @@ try {
 	}
 	$missingAtPasteCount = 0
 	$hasWildcardToken = $false
+	$blockedMovePaths = New-Object System.Collections.Generic.List[string]
+	$effectivePaths = New-Object System.Collections.Generic.List[string]
 	foreach ($candidatePath in @($array)) {
 		if ([string]::IsNullOrWhiteSpace($candidatePath)) { continue }
 		if (Test-IsStageWildcardToken -PathValue $candidatePath) {
 			$hasWildcardToken = $true
 			$tokenSource = Get-StageWildcardSourceFromToken -TokenPath $candidatePath
+			if ($command -eq "mv" -and (Test-IsProtectedMovePath -PathValue $tokenSource)) {
+				[void]$blockedMovePaths.Add($tokenSource)
+				continue
+			}
 			if ([string]::IsNullOrWhiteSpace($tokenSource) -or -not [System.IO.Directory]::Exists($tokenSource)) {
 				$missingAtPasteCount++
 			}
+			[void]$effectivePaths.Add($candidatePath)
+			continue
+		}
+		if ($command -eq "mv" -and (Test-IsProtectedMovePath -PathValue $candidatePath)) {
+			[void]$blockedMovePaths.Add($candidatePath)
 			continue
 		}
 		if (-not [System.IO.Directory]::Exists($candidatePath) -and -not [System.IO.File]::Exists($candidatePath)) {
 			$missingAtPasteCount++
 		}
+		[void]$effectivePaths.Add($candidatePath)
+	}
+	if ($blockedMovePaths.Count -gt 0) {
+		$blockedUnique = @($blockedMovePaths | Select-Object -Unique)
+		$blockedPreview = @($blockedUnique | Select-Object -First 5)
+		Write-RunLog ("Safety guard blocked move path(s) | Count={0} | Paths='{1}'" -f $blockedUnique.Count, ([string]::Join(" | ", $blockedPreview)))
+		Write-Host ("[BLOCKED] Safety guard skipped {0} protected move item(s)." -f $blockedUnique.Count) -ForegroundColor Red
+	}
+	$array = @($effectivePaths.ToArray())
+	$arrayLength = @($array).Count
+	if ($arrayLength -eq 0) {
+		if ($command -eq "mv" -and $blockedMovePaths.Count -gt 0) {
+			throw "Safety guard blocked move of protected path(s)."
+		}
+		NoListAvailable
 	}
 	Write-RunLog ("Stage payload ready | Command={0} | Mode={1} | StageFormat={2} | StagedCount={3} | MissingAtPasteCount={4} | Session={5} | WildcardToken={6}" -f $command, $mode, $stageFormat, $arrayLength, $missingAtPasteCount, $snapshotSession, $hasWildcardToken)
 
