@@ -1,0 +1,38 @@
+Windows Registry Editor Version 5.00
+
+; Temp benchmark menu: folder-only copy/paste
+; Purpose: measure snappiness for single-folder workflow with minimal logic.
+; Location: D:\Users\joty79\scripts\Robocopy\benchmarks\folder-only-context
+
+; -------- CLEANUP OLD TEMP KEYS --------
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_30_RoboFolderCopyBench]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_31_RoboFolderPasteBench]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_31_RoboFolderPasteBench]
+
+; -------- DIRECTORY CONTEXT --------
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_30_RoboFolderCopyBench]
+"MUIVerb"="Robo-Folder-Copy (Temp)"
+"NoWorkingDirectory"=""
+"MultiSelectModel"="Single"
+"Icon"="shell32.dll,-16769"
+"SeparatorBefore"=""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_30_RoboFolderCopyBench\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\benchmarks\\folder-only-context\\FolderBench_CopySilent.vbs\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_31_RoboFolderPasteBench]
+"MUIVerb"="Robo-Folder-Paste (Temp)"
+"NoWorkingDirectory"=""
+"Icon"="shell32.dll,-16761"
+"SeparatorAfter"=""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_31_RoboFolderPasteBench\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\benchmarks\\folder-only-context\\FolderBench_Paste.vbs\" \"%1\""
+
+; -------- DIRECTORY BACKGROUND CONTEXT --------
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_31_RoboFolderPasteBench]
+"MUIVerb"="Robo-Folder-Paste (Temp)"
+"Icon"="shell32.dll,-16761"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_31_RoboFolderPasteBench\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\benchmarks\\folder-only-context\\FolderBench_Paste.vbs\" \"%V\""

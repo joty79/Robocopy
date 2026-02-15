@@ -1618,6 +1618,11 @@ if ($script:RunSettings.DebugMode) {
 try {
 	# Clear stale copy burst marker once paste flow starts.
 	Remove-StageBurstMarker
+	$phaseFlowTimer = [System.Diagnostics.Stopwatch]::StartNew()
+	$phaseStageResolveMs = 0
+	$phasePayloadPrepMs = 0
+	$phaseExecuteMs = 0
+	$payloadPrepStartMs = $null
 
 	# Quick probe mode for tuning/tests without copy operations
 	if ($args.Count -ge 3 -and $args[0] -eq "__mtprobe") {
@@ -1650,6 +1655,7 @@ try {
 
 	$pasteDirectoryDisplay = "'" + $pasteIntoDirectory + "'"
 
+	$stageResolveStartMs = $phaseFlowTimer.ElapsedMilliseconds
 	$resolvedSnapshot = Resolve-StagedPayload -RequestedCommand $requestedCommand -Backend $script:StageBackend
 	if ($resolvedSnapshot) {
 		$command = $resolvedSnapshot.CommandName
@@ -1661,6 +1667,8 @@ try {
 		Write-RunLog ("Stage unresolved | Requested={0} | Backend={1} | FallbackCommand={2}" -f $requestedCommand, $script:StageBackend, $command)
 	}
 	$mode = if ($requestedMode -in @("m", "s")) { $requestedMode } else { "s" }
+	$phaseStageResolveMs = [int]([Math]::Max(0, $phaseFlowTimer.ElapsedMilliseconds - $stageResolveStartMs))
+	$payloadPrepStartMs = $phaseFlowTimer.ElapsedMilliseconds
 
 	if ($command -eq "mv") {
 		$flag = "/MOV"
@@ -1822,6 +1830,12 @@ try {
 	}
 
 	If ( $copy -eq $True ) {
+		if ($null -ne $payloadPrepStartMs) {
+			$phasePayloadPrepMs = [int]([Math]::Max(0, $phaseFlowTimer.ElapsedMilliseconds - $payloadPrepStartMs))
+		}
+		else {
+			$phasePayloadPrepMs = 0
+		}
 
 		write-host "Begin $string3 ..."
 		write-host ""
@@ -1931,15 +1945,19 @@ try {
 
 
 		$sessionTimer.Stop()
+		$phaseExecuteMs = [int]$sessionTimer.ElapsedMilliseconds
+		$phasePreExecMs = [int]($phaseStageResolveMs + $phasePayloadPrepMs)
+		$phaseTotalMs = [int]($phasePreExecMs + $phaseExecuteMs)
+		$totalSeconds = [Math]::Round($sessionTimer.Elapsed.TotalSeconds, 3)
+		$completedOps = @($sessionResults | Where-Object {
+			$null -ne $_ -and $_.PSObject -and $_.PSObject.Properties.Match("Succeeded").Count -gt 0
+		})
+
 		if ($script:RunSettings.BenchmarkOutput -and $sessionResults.Count -gt 0) {
 			# Defensive filtering: count only structured transfer result objects.
-			$completedOps = @($sessionResults | Where-Object {
-				$null -ne $_ -and $_.PSObject -and $_.PSObject.Properties.Match("Succeeded").Count -gt 0
-			})
 			$totalBytes = [int64](($completedOps | Measure-Object -Property Bytes -Sum).Sum)
 			$totalFiles = [int](($completedOps | Measure-Object -Property Files -Sum).Sum)
 			$failedOps = @($completedOps | Where-Object { -not $_.Succeeded }).Count
-			$totalSeconds = [Math]::Round($sessionTimer.Elapsed.TotalSeconds, 3)
 			$aggregateThroughput = "-"
 			if ($sessionTimer.Elapsed.TotalSeconds -gt 0 -and $totalBytes -gt 0) {
 				$aggregateThroughput = ("{0:N2} MB/s" -f (($totalBytes / 1MB) / $sessionTimer.Elapsed.TotalSeconds))
@@ -1950,7 +1968,13 @@ try {
 			Write-Host ("Operations: {0} | Failed: {1}" -f $completedOps.Count, $failedOps) -ForegroundColor Cyan
 			Write-Host ("Total files: {0} | Total data: {1}" -f $totalFiles, (Format-ByteSize -Bytes $totalBytes)) -ForegroundColor Cyan
 			Write-Host ("Total time: {0}s | Avg throughput~{1}" -f $totalSeconds, $aggregateThroughput) -ForegroundColor Cyan
+			Write-Host ("Phase timing: Resolve={0}ms | Prep={1}ms | Execute={2}ms | Total~{3}ms" -f $phaseStageResolveMs, $phasePayloadPrepMs, $phaseExecuteMs, $phaseTotalMs) -ForegroundColor DarkCyan
 			Write-RunLog ("Session benchmark | Ops={0} | Failed={1} | Files={2} | Bytes={3} | Time={4}s | Throughput={5}" -f $completedOps.Count, $failedOps, $totalFiles, $totalBytes, $totalSeconds, $aggregateThroughput)
+		}
+		else {
+			Write-Host ("Elapsed: {0}s | Operations: {1}" -f $totalSeconds, $completedOps.Count) -ForegroundColor Cyan
+			Write-Host ("Phase timing: Resolve={0}ms | Prep={1}ms | Execute={2}ms | Total~{3}ms" -f $phaseStageResolveMs, $phasePayloadPrepMs, $phaseExecuteMs, $phaseTotalMs) -ForegroundColor DarkCyan
+			Write-RunLog ("Session timing | Ops={0} | Time={1}s | PhaseResolve={2}ms | PhasePrep={3}ms | PhaseExecute={4}ms | PhaseTotal={5}ms" -f $completedOps.Count, $totalSeconds, $phaseStageResolveMs, $phasePayloadPrepMs, $phaseExecuteMs, $phaseTotalMs)
 		}
 
 		Clear-StagedPayload -CommandName $command -Backend $script:StageBackend

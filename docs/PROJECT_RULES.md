@@ -442,3 +442,59 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-14 - Installer self-update guard (master `Install.ps1` check on launch)
+- Problem:
+  - `Install.ps1` μπορεί να εκτελείται από οποιοδήποτε path (π.χ. Desktop) και να είναι outdated, οδηγώντας σε ασυνεπή install behavior.
+- Root cause:
+  - Δεν υπήρχε pre-flight self-update check του installer script πριν από το main flow.
+- Guardrail / Rule:
+  - On launch, installer compares local `Install.ps1` vs `master` `Install.ps1` from GitHub (normalized content hash).
+  - If same: prints green success and continues normally.
+  - If different: asks user to download latest in same directory and relaunches latest script.
+  - If overwrite of running file fails, writes fallback `Install_latest.ps1` and relaunches that.
+  - Added `-SkipSelfUpdateCheck` to prevent relaunch loop.
+- Files affected:
+  - `Install.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-15 - Temp folder-only benchmark context menu (single-folder copy/paste)
+- Problem:
+  - Χρειαζόταν isolated benchmark flow για να μετρηθεί snappiness σε αυστηρά `1 folder -> 1 target folder` χωρίς το overhead του full multi-selection/universal engine.
+- Root cause:
+  - Το full stack καλύπτει πολλά scenarios/guards και δυσκολεύει τη σύγκριση καθαρού single-folder path.
+- Guardrail / Rule:
+  - Added temp benchmark stack with dedicated scripts/keys:
+    - stage only one folder path (`benchmarks/folder-only-context/FolderBench_CopyStage.ps1`)
+    - paste folder-to-folder via direct `robocopy` call (`benchmarks/folder-only-context/FolderBench_Paste.ps1`)
+    - wrappers (`benchmarks/folder-only-context/FolderBench_CopySilent.vbs`, `benchmarks/folder-only-context/FolderBench_Paste.vbs`)
+    - separate reg integration (`benchmarks/folder-only-context/RoboCopy_FolderOnly_Benchmark.reg`)
+  - Uses separate context-menu key names (`Y_30_*`, `Y_31_*`) to avoid collisions with normal Robo-Copy/Robo-Paste entries.
+- Files affected:
+  - `benchmarks/folder-only-context/FolderBench_CopyStage.ps1`
+  - `benchmarks/folder-only-context/FolderBench_Paste.ps1`
+  - `benchmarks/folder-only-context/FolderBench_CopySilent.vbs`
+  - `benchmarks/folder-only-context/FolderBench_Paste.vbs`
+  - `benchmarks/folder-only-context/RoboCopy_FolderOnly_Benchmark.reg`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation for new PowerShell scripts via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-15 - Always-visible elapsed timing in main runtime
+- Problem:
+  - Με `benchmark=false`, το main runtime δεν έδειχνε χρόνο στο console, άρα δεν γινόταν γρήγορη σύγκριση με temp benchmark runs.
+- Root cause:
+  - Το session timing output ήταν δεμένο αποκλειστικά με `BenchmarkOutput`.
+- Guardrail / Rule:
+  - Keep transfer/session timing visible even when benchmark counters are off.
+  - With `benchmark=false`, print compact summary:
+    - `Elapsed: ... | Operations: ...`
+    - `Phase timing: Resolve | Prep | Execute | Total`
+  - With `benchmark=true`, keep full benchmark block and include same phase timing line.
+- Files affected:
+  - `rcp.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` via `Parser::ParseFile` (`PARSE_OK`).
