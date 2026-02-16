@@ -1,4 +1,4 @@
-#Robocopy paste engine for staged files/folders (file or registry backend)
+#Robocopy paste engine for staged files/folders (file backend)
 
 #flags used when robocopying (overwrites files):
 
@@ -229,30 +229,10 @@ function Convert-ToUtcDateOrNull {
 	}
 }
 
-function Normalize-StageBackend {
-	param([string]$Value)
-
-	if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
-	$normalized = $Value.Trim().ToLowerInvariant()
-	if ($normalized -in @("file", "registry")) { return $normalized }
-	return $null
-}
-
 function Get-StageBackend {
 	param([object]$Config)
-
-	$backend = Normalize-StageBackend -Value $script:StageBackendDefault
-	if (-not $backend) { $backend = "file" }
-
-	$envBackend = Normalize-StageBackend -Value $env:RCWM_STAGE_BACKEND
-	if ($envBackend) { return $envBackend }
-
-	if ($Config -and $Config.PSObject.Properties.Name -contains "stage_backend") {
-		$configBackend = Normalize-StageBackend -Value ([string]$Config.stage_backend)
-		if ($configBackend) { return $configBackend }
-	}
-
-	return $backend
+	# Safety lock: stage backend is fixed to file.
+	return "file"
 }
 
 function Get-StagedFilePath {
@@ -661,38 +641,6 @@ function Get-PathMediaType {
 	}
 }
 
-function Normalize-RouteToken {
-	param([string]$Token)
-
-	if (-not $Token) { return $null }
-	$normalized = $Token.Trim().ToUpperInvariant()
-	if (-not $normalized) { return $null }
-	if ($normalized -eq "*" -or $normalized -eq "ANY") { return "*" }
-	if ($normalized -eq "UNC" -or $normalized -eq "NETWORK") { return "UNC" }
-	if ($normalized -match '^[A-Z]:?$') { return $normalized.Substring(0, 1) }
-	return $normalized.TrimEnd('\')
-}
-
-function Test-RouteMatch {
-	param(
-		[string]$Token,
-		[string]$PathValue
-	)
-
-	$normalizedToken = Normalize-RouteToken -Token $Token
-	if (-not $normalizedToken) { return $false }
-	if ($normalizedToken -eq "*") { return $true }
-	if ($normalizedToken -eq "UNC") { return ($PathValue -match '^[\\/]{2}') }
-
-	$driveLetter = Get-DriveLetterFromPath -PathValue $PathValue
-	if ($normalizedToken -match '^[A-Z]$') {
-		return ($driveLetter -eq $normalizedToken)
-	}
-
-	$normalizedPath = $PathValue.TrimEnd('\').ToUpperInvariant()
-	return $normalizedPath.StartsWith($normalizedToken)
-}
-
 function Get-TuneConfig {
 	param([string]$ConfigPath)
 
@@ -701,10 +649,17 @@ function Get-TuneConfig {
 		benchmark      = $false
 		hold_window    = $false
 		debug_mode     = $false
-		stage_backend  = "file"
 		default_mt     = $null
+		mt_rules       = [ordered]@{
+			ssd_to_ssd              = 32
+			ssd_to_hdd              = 8
+			hdd_to_ssd              = 8
+			hdd_to_hdd_diff_volume  = 8
+			hdd_to_hdd_same_volume  = 8
+			network_any             = 8
+			unknown_local           = 16
+		}
 		extra_args     = @()
-		routes         = @()
 	}
 
 	if (-not (Test-Path -LiteralPath $ConfigPath)) {
@@ -735,15 +690,30 @@ function Get-TuneConfig {
 			if ($null -ne $data.debug_mode) {
 				$config.debug_mode = [bool]$data.debug_mode
 			}
-			if ($null -ne $data.stage_backend) {
-				$cfgBackend = Normalize-StageBackend -Value ([string]$data.stage_backend)
-				if ($cfgBackend) { $config.stage_backend = $cfgBackend }
-			}
-
 			if ($null -ne $data.default_mt -and "$($data.default_mt)" -match '^\d+$') {
 				$defaultMtValue = [int]$data.default_mt
 				if ($defaultMtValue -ge 1 -and $defaultMtValue -le 128) {
 					$config.default_mt = $defaultMtValue
+				}
+			}
+
+			if ($data.mt_rules) {
+				foreach ($ruleName in @(
+					"ssd_to_ssd",
+					"ssd_to_hdd",
+					"hdd_to_ssd",
+					"hdd_to_hdd_diff_volume",
+					"hdd_to_hdd_same_volume",
+					"network_any",
+					"unknown_local"
+				)) {
+					$ruleValue = $data.mt_rules.$ruleName
+					if ($null -ne $ruleValue -and "$ruleValue" -match '^\d+$') {
+						$mtRule = [int]$ruleValue
+						if ($mtRule -ge 1 -and $mtRule -le 128) {
+							$config.mt_rules[$ruleName] = $mtRule
+						}
+					}
 				}
 			}
 
@@ -754,28 +724,31 @@ function Get-TuneConfig {
 				}
 			}
 
-			if ($data.routes) {
-				foreach ($route in @($data.routes)) {
-					$source = [string]$route.source
-					$destination = [string]$route.destination
-					$mtText = [string]$route.mt
-					if ($source -and $destination -and $mtText -match '^\d+$') {
-						$mtValue = [int]$mtText
-						if ($mtValue -ge 1 -and $mtValue -le 128) {
-							$config.routes += [pscustomobject]@{
-								source      = $source
-								destination = $destination
-								mt          = $mtValue
-							}
-						}
-					}
-				}
-			}
 		}
 	}
 	catch { }
 
 	return $config
+}
+
+function Get-MtRuleValue {
+	param(
+		[object]$Config,
+		[string]$RuleName,
+		[int]$FallbackValue
+	)
+
+	if ($Config -and $Config.mt_rules) {
+		$ruleCandidate = $Config.mt_rules.$RuleName
+		if ($null -ne $ruleCandidate -and "$ruleCandidate" -match '^\d+$') {
+			$mt = [int]$ruleCandidate
+			if ($mt -ge 1 -and $mt -le 128) {
+				return $mt
+			}
+		}
+	}
+
+	return $FallbackValue
 }
 
 function Get-RunSettings {
@@ -819,25 +792,6 @@ function Get-RunSettings {
 	}
 }
 
-function Get-RouteThreadOverride {
-	param(
-		[object]$Config,
-		[string]$SourcePath,
-		[string]$DestinationPath
-	)
-
-	if (-not $Config -or -not $Config.routes) { return $null }
-
-	foreach ($route in $Config.routes) {
-		if ((Test-RouteMatch -Token $route.source -PathValue $SourcePath) -and
-			(Test-RouteMatch -Token $route.destination -PathValue $DestinationPath)) {
-			return [int]$route.mt
-		}
-	}
-
-	return $null
-}
-
 function Get-ThreadDecision {
 	param(
 		[string]$SourcePath,
@@ -868,18 +822,6 @@ function Get-ThreadDecision {
 		}
 	}
 
-	$routeOverride = Get-RouteThreadOverride -Config $script:RoboTuneConfig -SourcePath $SourcePath -DestinationPath $DestinationPath
-	if ($routeOverride) {
-		return [pscustomobject]@{
-			ThreadCount = $routeOverride
-			Reason      = "RoboTune route override"
-			SourceMedia = $sourceMedia
-			DestMedia   = $destMedia
-			SourceDisk  = $sourceDisk
-			DestDisk    = $destDisk
-		}
-	}
-
 	if ($script:RoboTuneConfig.default_mt) {
 		return [pscustomobject]@{
 			ThreadCount = [int]$script:RoboTuneConfig.default_mt
@@ -891,30 +833,44 @@ function Get-ThreadDecision {
 		}
 	}
 
-	# Conservative defaults for slow or seek-heavy paths
+	# Media-based rules (configurable via RoboTune mt_rules).
 	if ($sourceMedia -eq "NETWORK" -or $destMedia -eq "NETWORK") {
-		$threads = 8
-		$reason = "Network path"
-	}
-	elseif ($sourceMedia -eq "HDD" -or $destMedia -eq "HDD") {
-		$threads = 8
-		$reason = "HDD involved"
-	}
-	elseif ($samePhysicalDisk) {
-		$threads = 8
-		$reason = "Same physical disk"
-	}
-	elseif ($sameDriveLetter) {
-		$threads = 8
-		$reason = "Same drive letter"
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "network_any" -FallbackValue 8
+		$reason = "RoboTune mt_rules: network_any"
 	}
 	elseif ($sourceMedia -eq "SSD" -and $destMedia -eq "SSD") {
-		$threads = 32
-		$reason = "SSD -> SSD"
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "ssd_to_ssd" -FallbackValue 32
+		$reason = "RoboTune mt_rules: ssd_to_ssd"
+	}
+	elseif ($sourceMedia -eq "SSD" -and $destMedia -eq "HDD") {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "ssd_to_hdd" -FallbackValue 8
+		$reason = "RoboTune mt_rules: ssd_to_hdd"
+	}
+	elseif ($sourceMedia -eq "HDD" -and $destMedia -eq "SSD") {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "hdd_to_ssd" -FallbackValue 8
+		$reason = "RoboTune mt_rules: hdd_to_ssd"
+	}
+	elseif ($sourceMedia -eq "HDD" -and $destMedia -eq "HDD") {
+		if ($samePhysicalDisk -or $sameDriveLetter) {
+			$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "hdd_to_hdd_same_volume" -FallbackValue 8
+			$reason = "RoboTune mt_rules: hdd_to_hdd_same_volume"
+		}
+		else {
+			$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "hdd_to_hdd_diff_volume" -FallbackValue 8
+			$reason = "RoboTune mt_rules: hdd_to_hdd_diff_volume"
+		}
+	}
+	elseif ($samePhysicalDisk) {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 8
+		$reason = "RoboTune mt_rules: unknown_local (same physical disk)"
+	}
+	elseif ($sameDriveLetter) {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 8
+		$reason = "RoboTune mt_rules: unknown_local (same drive letter)"
 	}
 	else {
-		$threads = 16
-		$reason = "Unknown/mixed local media"
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 16
+		$reason = "RoboTune mt_rules: unknown_local"
 	}
 
 	return [pscustomobject]@{
@@ -968,6 +924,55 @@ function Get-DirectoryStats {
 		Measure-Object -Property Length -Sum
 	$bytes = if ($null -eq $measure.Sum) { [int64]0 } else { [int64]$measure.Sum }
 	return [pscustomobject]@{ Files = [int]$measure.Count; Bytes = $bytes }
+}
+
+function Test-IsSameVolumePath {
+	param(
+		[string]$SourcePath,
+		[string]$DestinationPath
+	)
+
+	$sourceNormalized = Normalize-ContextPathValue -PathValue $SourcePath
+	$destNormalized = Normalize-ContextPathValue -PathValue $DestinationPath
+	if ([string]::IsNullOrWhiteSpace($sourceNormalized) -or [string]::IsNullOrWhiteSpace($destNormalized)) {
+		return $false
+	}
+
+	try { $sourceNormalized = (Resolve-Path -LiteralPath $sourceNormalized -ErrorAction Stop).ProviderPath } catch { }
+	try { $destNormalized = (Resolve-Path -LiteralPath $destNormalized -ErrorAction Stop).ProviderPath } catch { }
+
+	$sourceRoot = [System.IO.Path]::GetPathRoot($sourceNormalized)
+	$destRoot = [System.IO.Path]::GetPathRoot($destNormalized)
+	if ([string]::IsNullOrWhiteSpace($sourceRoot) -or [string]::IsNullOrWhiteSpace($destRoot)) {
+		return $false
+	}
+
+	return [string]::Equals($sourceRoot.TrimEnd('\'), $destRoot.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-IsPathInside {
+	param(
+		[string]$ParentPath,
+		[string]$CandidatePath
+	)
+
+	$parentNormalized = Normalize-ContextPathValue -PathValue $ParentPath
+	$candidateNormalized = Normalize-ContextPathValue -PathValue $CandidatePath
+	if ([string]::IsNullOrWhiteSpace($parentNormalized) -or [string]::IsNullOrWhiteSpace($candidateNormalized)) {
+		return $false
+	}
+
+	try { $parentNormalized = (Resolve-Path -LiteralPath $parentNormalized -ErrorAction Stop).ProviderPath } catch { }
+	try { $candidateNormalized = (Resolve-Path -LiteralPath $candidateNormalized -ErrorAction Stop).ProviderPath } catch { }
+
+	$parentTrimmed = $parentNormalized.TrimEnd('\')
+	$candidateTrimmed = $candidateNormalized.TrimEnd('\')
+	if ([string]::IsNullOrWhiteSpace($parentTrimmed) -or [string]::IsNullOrWhiteSpace($candidateTrimmed)) {
+		return $false
+	}
+
+	$parentPrefix = $parentTrimmed + "\"
+	return $candidateTrimmed.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Format-ByteSize {
@@ -1241,6 +1246,59 @@ function Invoke-StagedTransfer {
 
 	if ($sourceItem.PSIsContainer) {
 		$destination = Join-Path $PasteIntoDirectory $itemName
+		if ($IsMove -and (Test-IsPathInside -ParentPath $SourcePath -CandidatePath $destination)) {
+			$message = ("Blocked move: destination is inside source. Source='{0}' | Dest='{1}'" -f $SourcePath, $destination)
+			Write-Host $message -ForegroundColor Red
+			Write-RunLog ("Safety guard blocked move | Reason=DestinationInsideSource | Source='{0}' | Dest='{1}'" -f $SourcePath, $destination)
+			return [pscustomobject]@{
+				ItemName = $itemName
+				Result   = [pscustomobject]@{
+					ExitCode       = 16
+					Succeeded      = $false
+					ThreadCount    = 0
+					Reason         = "Destination inside source blocked"
+					SourceMedia    = "-"
+					DestMedia      = "-"
+					Files          = 0
+					Bytes          = [int64]0
+					ElapsedSeconds = 0
+				}
+			}
+		}
+
+		$canUseNativeMove = $IsMove -and -not $MergeMode -and (-not (Test-Path -LiteralPath $destination)) -and (Test-IsSameVolumePath -SourcePath $SourcePath -DestinationPath $destination)
+		if ($canUseNativeMove) {
+			$fastTimer = [System.Diagnostics.Stopwatch]::StartNew()
+			$stats = [pscustomobject]@{ Files = 0; Bytes = [int64]0 }
+			if ($script:RunSettings.BenchmarkOutput) {
+				$stats = Get-DirectoryStats -PathValue $SourcePath
+			}
+			try {
+				Move-Item -LiteralPath $SourcePath -Destination $destination -Force -ErrorAction Stop
+				$fastTimer.Stop()
+				$elapsedSeconds = [Math]::Round($fastTimer.Elapsed.TotalSeconds, 3)
+				Write-RunLog ("FastPath native-move used | Type=Directory | Source='{0}' | Dest='{1}' | Elapsed={2}s" -f $SourcePath, $destination, $elapsedSeconds)
+				$result = [pscustomobject]@{
+					ExitCode       = 1
+					Succeeded      = $true
+					ThreadCount    = 0
+					Reason         = "Same-volume native move fast path"
+					SourceMedia    = "-"
+					DestMedia      = "-"
+					Files          = $stats.Files
+					Bytes          = $stats.Bytes
+					ElapsedSeconds = $elapsedSeconds
+				}
+				return [pscustomobject]@{
+					ItemName = $itemName
+					Result   = $result
+				}
+			}
+			catch {
+				Write-RunLog ("FastPath native-move fallback | Type=Directory | Source='{0}' | Dest='{1}' | Error='{2}'" -f $SourcePath, $destination, $_.Exception.Message)
+			}
+		}
+
 		if (-not (Test-Path -LiteralPath $destination)) {
 			New-Item -Path $destination -ItemType Directory -Force | Out-Null
 		}
@@ -1272,6 +1330,41 @@ function Invoke-StagedTransfer {
 			Result   = $null
 		}
 	}
+
+	$fileDestination = Join-Path $PasteIntoDirectory $itemName
+	$canUseNativeMove = $IsMove -and -not $MergeMode -and (-not (Test-Path -LiteralPath $fileDestination)) -and (Test-IsSameVolumePath -SourcePath $SourcePath -DestinationPath $fileDestination)
+	if ($canUseNativeMove) {
+		$fastTimer = [System.Diagnostics.Stopwatch]::StartNew()
+		$fileBytes = [int64]0
+		if ($script:RunSettings.BenchmarkOutput) {
+			$fileBytes = [int64]$sourceItem.Length
+		}
+		try {
+			Move-Item -LiteralPath $SourcePath -Destination $fileDestination -Force -ErrorAction Stop
+			$fastTimer.Stop()
+			$elapsedSeconds = [Math]::Round($fastTimer.Elapsed.TotalSeconds, 3)
+			Write-RunLog ("FastPath native-move used | Type=File | Source='{0}' | Dest='{1}' | Elapsed={2}s" -f $SourcePath, $fileDestination, $elapsedSeconds)
+			$result = [pscustomobject]@{
+				ExitCode       = 1
+				Succeeded      = $true
+				ThreadCount    = 0
+				Reason         = "Same-volume native move fast path"
+				SourceMedia    = "-"
+				DestMedia      = "-"
+				Files          = 1
+				Bytes          = $fileBytes
+				ElapsedSeconds = $elapsedSeconds
+			}
+			return [pscustomobject]@{
+				ItemName = $itemName
+				Result   = $result
+			}
+		}
+		catch {
+			Write-RunLog ("FastPath native-move fallback | Type=File | Source='{0}' | Dest='{1}' | Error='{2}'" -f $SourcePath, $fileDestination, $_.Exception.Message)
+		}
+	}
+
 	$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters @($itemName)
 
 	if ($IsMove) {
@@ -1407,6 +1500,60 @@ function Invoke-StagedFileBatchTransfer {
 
 	$results = @()
 	$allSucceeded = $true
+	$canUseNativeMoveBatch = $IsMove -and -not $MergeMode -and (Test-IsSameVolumePath -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory)
+	if ($canUseNativeMoveBatch) {
+		$hasConflict = $false
+		foreach ($name in [string[]]$fileNames.ToArray()) {
+			$destPath = Join-Path $PasteIntoDirectory $name
+			if (Test-Path -LiteralPath $destPath) {
+				$hasConflict = $true
+				break
+			}
+		}
+
+		if (-not $hasConflict) {
+			$fastTimer = [System.Diagnostics.Stopwatch]::StartNew()
+			$totalBytes = [int64]0
+			if ($script:RunSettings.BenchmarkOutput) {
+				foreach ($sourceFile in [string[]]$resolvedFilePaths.ToArray()) {
+					$item = Get-Item -LiteralPath $sourceFile -Force -ErrorAction SilentlyContinue
+					if ($item -and -not $item.PSIsContainer) {
+						$totalBytes += [int64]$item.Length
+					}
+				}
+			}
+
+			$movedCount = 0
+			try {
+				foreach ($sourceFile in [string[]]$resolvedFilePaths.ToArray()) {
+					Move-Item -LiteralPath $sourceFile -Destination $PasteIntoDirectory -Force -ErrorAction Stop
+					$movedCount++
+				}
+				$fastTimer.Stop()
+				$elapsedSeconds = [Math]::Round($fastTimer.Elapsed.TotalSeconds, 3)
+				Write-RunLog ("FastPath native-move used | Type=FileBatch | Source='{0}' | Dest='{1}' | Count={2} | Elapsed={3}s" -f $sourceDirectory, $PasteIntoDirectory, $movedCount, $elapsedSeconds)
+				$results += [pscustomobject]@{
+					ExitCode       = 1
+					Succeeded      = $true
+					ThreadCount    = 0
+					Reason         = "Same-volume native move fast path"
+					SourceMedia    = "-"
+					DestMedia      = "-"
+					Files          = $movedCount
+					Bytes          = $totalBytes
+					ElapsedSeconds = $elapsedSeconds
+				}
+				return [pscustomobject]@{
+					ItemName = ("{0} files from '{1}'" -f $movedCount, $sourceDirectory)
+					Results  = @($results)
+				}
+			}
+			catch {
+				Write-RunLog ("FastPath native-move fallback | Type=FileBatch | Source='{0}' | Dest='{1}' | Error='{2}'" -f $sourceDirectory, $PasteIntoDirectory, $_.Exception.Message)
+			}
+		}
+	}
+
 	$useWildcardAllFiles = Test-IsFullTopLevelFileSelection -SourceDirectory $sourceDirectory -SelectedFileNames ([string[]]$fileNames.ToArray())
 	if ($useWildcardAllFiles) {
 		$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters @("*")

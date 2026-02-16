@@ -33,18 +33,18 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
   - Uses a named mutex (`Global\MoveTo_RoboCopy_Stage`) to serialize concurrent staging writes.
   - Uses a short session window to append per-item invokes into one staged set.
   - Stores staged source paths in `state\staging\rc.stage.json` / `state\staging\mv.stage.json` using a fast flat `V2` line-based payload (atomic temp-write + rename).
-  - Supports fallback backend `registry` via `stage_backend` (RoboTune) or `RCWM_STAGE_BACKEND` env var.
+  - Uses fixed `file` staging backend for safety and consistency.
   - Writes diagnostics/telemetry to `logs\stage_log.txt` (`SelectionReadMs`, `DedupeMs`, `PersistFileMs`, `PersistRegistryMs`, `TotalStageMs`).
 - `RoboPaste_Admin.vbs`
   - Elevated launcher for paste.
   - Opens `wt.exe` as admin and runs `rcp.ps1` with `pwsh -NoProfile`.
 - `rcp.ps1`
-  - Reads staged files/folders from the configured staging backend and executes `robocopy`.
+  - Reads staged files/folders from file staging snapshots and executes `robocopy`.
   - Clears the staging burst marker (`state\stage.burst`) on paste exit paths, so immediate next copy/cut is not suppressed.
   - Handles overwrite/merge prompt when destination item already exists.
   - Prints benchmark output in the paste window (per folder + session summary).
 - `RoboTune.ps1`
-  - Interactive tuning UI for MT rules, benchmark mode, debug mode, staging backend, and extra robocopy args.
+  - Interactive tuning UI for MT rules, benchmark mode, debug mode, hold-window behavior, and extra robocopy args.
   - Saves tuning in `RoboTune.json`.
 
 ## Execution Flow
@@ -65,11 +65,10 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
    - `state\staging\rc.stage.json` for copy
    - `state\staging\mv.stage.json` for move
    - file format is `V2` line payload (`V2|command|session|utc|expected|anchor_parent` + one path per line)
-   - (or registry backend when configured)
 4. Right-click destination folder (or background) -> `Robo-Paste`.
 5. `RoboPaste_Admin.vbs` starts elevated `wt.exe`, running:
    - `pwsh -File rcp.ps1 auto auto "<destination>"`
-6. `rcp.ps1` auto-detects active mode (`rc` or `mv`) by checking the configured staging backend.
+6. `rcp.ps1` auto-detects active mode (`rc` or `mv`) from staged file snapshots.
 7. For each staged source item:
    - Builds destination as `<pasteTarget>\<sourceName>`
    - If source is folder, runs folder robocopy flow (`/E`).
@@ -86,34 +85,35 @@ Base flags used:
 Move mode adds:
 - `/MOV`
 
-`/MT` is now selected automatically per source/destination path:
-- `8` threads: any `HDD`, network path, or same physical disk
-- `32` threads: `SSD -> SSD`
-- `16` threads: fallback for unknown/mixed local media
+`/MT` is selected per this priority order:
+- `RCWM_MT` env override (if set)
+- `default_mt` (global)
+- `mt_rules` media-combo map (auto fallback)
+
+Default `mt_rules`:
+- `ssd_to_ssd = 32`
+- `ssd_to_hdd = 8`
+- `hdd_to_ssd = 8`
+- `hdd_to_hdd_diff_volume = 8`
+- `hdd_to_hdd_same_volume = 8`
+- `network_any = 8`
+- `unknown_local = 16`
 
 Optional override:
 - set env var `RCWM_MT` (range `1..128`) to force a fixed thread count.
-- use `RoboTune.json` for route-specific MT and default MT rules.
-- set env var `RCWM_STAGE_BACKEND` (`file` or `registry`) to override staging backend for a run.
+- use `RoboTune.json` for `default_mt` and media `mt_rules`.
 
 If destination folder already exists, script prompts:
 - `Enter`: overwrite-style pass (normal flag set)
 - `M`: merge mode using `/XC /XN /XO` (skip changed/newer/older files)
 - `Esc`: abort remaining operations
 
-## Staging Backend Model
+## Staging Model
 
-- Default backend: `file`.
+- Backend is fixed to `file`.
   - Stage files: `state\staging\rc.stage.json`, `state\staging\mv.stage.json`
   - Uses flat `V2` line payload for fast staging writes.
   - `rcp.ps1` keeps backward compatibility and can still read legacy JSON snapshots.
-- Alternate backend: `registry`.
-  - Keys: `HKCU:\RCWM\rc`, `HKCU:\RCWM\mv`
-  - Source paths stored as `item_000001`, `item_000002`, ...
-- Backend selection order:
-  1. `RCWM_STAGE_BACKEND` env var
-  2. `RoboTune.json` -> `stage_backend`
-  3. default `file`
 
 ## Requirements
 
@@ -121,7 +121,7 @@ If destination folder already exists, script prompts:
 - PowerShell 7 (`pwsh.exe`)
 - Windows Script Host (`wscript.exe`)
 - Windows Terminal (`wt.exe`) optional (fallback to elevated `pwsh.exe` is supported)
-- Write access to script `state` folder (and `HKCU` only if `registry` backend is selected)
+- Write access to script `state` folder
 
 ## Logs
 
@@ -183,13 +183,13 @@ pwsh -NoProfile -File .\Robocopy\RoboTune.ps1
 ```
 
 Menu actions:
-- add/update per-route MT (example: `E -> D = 64`)
-- remove route overrides
 - set `default_mt`
+- set media MT rules (`mt_rules`) per SSD/HDD/network combo
 - set extra robocopy args (example: `/R:0 /W:0`)
 - toggle benchmark mode
 - toggle debug mode
-- toggle staging backend (`file` / `registry`)
+- toggle hold window
+- set media MT rules (`mt_rules`)
 
 Benchmark mode behavior:
 - `ON`: benchmark metrics enabled + paste window stays open at end.

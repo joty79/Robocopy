@@ -130,41 +130,10 @@ function Ensure-StageStateDirectories {
     catch { }
 }
 
-function Normalize-StageBackend {
-    param([string]$Value)
-
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
-    $normalized = $Value.Trim().ToLowerInvariant()
-    if ($normalized -in @("file", "registry")) { return $normalized }
-    return $null
-}
-
 function Get-StageBackend {
     param([string]$ConfigPath)
-
-    $backend = Normalize-StageBackend -Value $script:StageBackendDefault
-    if (-not $backend) { $backend = "file" }
-
-    $envBackend = Normalize-StageBackend -Value $env:RCWM_STAGE_BACKEND
-    if ($envBackend) { return $envBackend }
-
-    if (-not (Test-Path -LiteralPath $ConfigPath)) {
-        return $backend
-    }
-
-    try {
-        $raw = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop
-        if (-not [string]::IsNullOrWhiteSpace($raw)) {
-            $data = $raw | ConvertFrom-Json -ErrorAction Stop
-            $cfgBackend = Normalize-StageBackend -Value ([string]$data.stage_backend)
-            if ($cfgBackend) {
-                return $cfgBackend
-            }
-        }
-    }
-    catch { }
-
-    return $backend
+    # Safety lock: stage backend is fixed to file.
+    return "file"
 }
 
 function Get-StageDebugMode {

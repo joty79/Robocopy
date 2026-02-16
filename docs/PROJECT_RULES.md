@@ -9,6 +9,53 @@
 
 ## Critical Decisions
 
+### 2026-02-16 - Stage backend locked to `file` (remove toggle risk)
+- Problem:
+  - Το `stage_backend` toggle δεν χρησιμοποιούνταν και μπορούσε να γυρίσει κατά λάθος σε `registry`, δημιουργώντας debug/runtime divergence από το tuned path.
+- Root cause:
+  - Legacy fallback option παρέμεινε στο UI/config μετά τα performance/safety optimizations που στόχευαν το file staging flow.
+- Guardrail / Rule:
+  - Αφαιρέθηκε το `stage_backend` από RoboTune menu/config surface.
+  - Runtime (`rcopySingle.ps1`, `rcp.ps1`) κλειδώθηκε σε `file` backend για deterministic behavior.
+- Files affected:
+  - `RoboTune.ps1`
+  - `rcopySingle.ps1`
+  - `rcp.ps1`
+  - `README.md`
+- Validation/tests run:
+  - Parse validation `RoboTune.ps1`, `rcopySingle.ps1`, `rcp.ps1` μέσω parser check.
+
+### 2026-02-16 - Removed route-based MT overrides (RoboTune cleanup)
+- Problem:
+  - Route override menu (`Add/Remove route MT`) πρόσθετε complexity χωρίς να χρησιμοποιείται.
+- Root cause:
+  - Διπλό tuning model (`routes` + `default_mt` + auto rules) έκανε το config πιο δύσκολο στη συντήρηση.
+- Guardrail / Rule:
+  - Αφαιρέθηκαν πλήρως τα route overrides από `RoboTune.ps1`, `rcp.ps1`, και docs.
+  - MT tuning πλέον βασίζεται σε: `RCWM_MT` env > `default_mt` > `mt_rules`.
+- Files affected:
+  - `RoboTune.ps1`
+  - `rcp.ps1`
+  - `README.md`
+- Validation/tests run:
+  - Parse validation `RoboTune.ps1` και `rcp.ps1` μέσω parser check.
+
+### 2026-02-16 - Configurable MT media-combo rules (`mt_rules`)
+- Problem:
+  - Χρειαζόταν ξεχωριστό MT control για SSD/HDD combos (ειδικά `SSD->HDD`, `HDD->HDD diff volume`, `HDD->HDD same volume`) χωρίς να εξαρτάται μόνο από `default_mt` ή route overrides.
+- Root cause:
+  - Το auto MT logic ήταν hardcoded και δεν επέτρεπε per-combo tuning.
+- Guardrail / Rule:
+  - Προστέθηκε `mt_rules` block στο `RoboTune.json` με validated values `1..128`.
+  - Decision priority πλέον: `RCWM_MT` env > route override > `default_mt` > `mt_rules` media combo.
+  - Νέο RoboTune menu action για interactive update των `mt_rules`.
+- Files affected:
+  - `rcp.ps1`
+  - `RoboTune.ps1`
+  - `README.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` και `RoboTune.ps1` μέσω parser check.
+
 ### 2026-02-15 - Single-item stage source must equal context anchor
 - Problem:
   - Σε single-item Cut/Copy μπορούσε να staged path να αποκλίνει από το clicked item (`%1` anchor), οδηγώντας σε λάθος source στο paste.
