@@ -87,21 +87,19 @@ Move mode adds:
 
 `/MT` is selected per this priority order:
 - `RCWM_MT` env override (if set)
-- `default_mt` (global)
 - `mt_rules` media-combo map (auto fallback)
 
 Default `mt_rules`:
 - `ssd_to_ssd = 32`
-- `ssd_to_hdd = 8`
-- `hdd_to_ssd = 8`
+- `ssd_hdd_any = 8`
 - `hdd_to_hdd_diff_volume = 8`
 - `hdd_to_hdd_same_volume = 8`
-- `network_any = 8`
-- `unknown_local = 16`
+- `lan_any = 8`
+- `usb_any = 8`
 
 Optional override:
 - set env var `RCWM_MT` (range `1..128`) to force a fixed thread count.
-- use `RoboTune.json` for `default_mt` and media `mt_rules`.
+- use `RoboTune.json` for media `mt_rules`.
 
 If destination folder already exists, script prompts:
 - `Enter`: overwrite-style pass (normal flag set)
@@ -183,13 +181,11 @@ pwsh -NoProfile -File .\Robocopy\RoboTune.ps1
 ```
 
 Menu actions:
-- set `default_mt`
-- set media MT rules (`mt_rules`) per SSD/HDD/network combo
+- set media MT rules (`mt_rules`) per SSD/HDD/LAN/USB combo
 - set extra robocopy args (example: `/R:0 /W:0`)
 - toggle benchmark mode
 - toggle debug mode
 - toggle hold window
-- set media MT rules (`mt_rules`)
 
 Benchmark mode behavior:
 - `ON`: benchmark metrics enabled + paste window stays open at end.

@@ -601,7 +601,7 @@ function Get-PathMediaType {
 	param([string]$PathValue)
 
 	if (-not $PathValue) { return "Unknown" }
-	if ($PathValue -match '^[\\/]{2}') { return "Network" }
+	if ($PathValue -match '^[\\/]{2}') { return "LAN" }
 
 	$driveLetter = Get-DriveLetterFromPath -PathValue $PathValue
 	if (-not $driveLetter) { return "Unknown" }
@@ -613,6 +613,10 @@ function Get-PathMediaType {
 	try {
 		$partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
 		$disk = Get-Disk -Number $partition.DiskNumber -ErrorAction Stop
+		$busType = [string]$disk.BusType
+		if (-not [string]::IsNullOrWhiteSpace($busType) -and $busType.ToUpperInvariant() -eq "USB") {
+			return "USB"
+		}
 		$mediaType = [string]$disk.MediaType
 		if (-not [string]::IsNullOrWhiteSpace($mediaType) -and $mediaType -ne "Unspecified") {
 			return $mediaType.ToUpperInvariant()
@@ -649,15 +653,14 @@ function Get-TuneConfig {
 		benchmark      = $false
 		hold_window    = $false
 		debug_mode     = $false
-		default_mt     = $null
 		mt_rules       = [ordered]@{
 			ssd_to_ssd              = 32
-			ssd_to_hdd              = 8
-			hdd_to_ssd              = 8
+			ssd_hdd_any             = 8
 			hdd_to_hdd_diff_volume  = 8
 			hdd_to_hdd_same_volume  = 8
-			network_any             = 8
-			unknown_local           = 16
+			lan_any                 = 8
+			usb_any                 = 8
+			unknown_local           = 8
 		}
 		extra_args     = @()
 	}
@@ -690,21 +693,17 @@ function Get-TuneConfig {
 			if ($null -ne $data.debug_mode) {
 				$config.debug_mode = [bool]$data.debug_mode
 			}
-			if ($null -ne $data.default_mt -and "$($data.default_mt)" -match '^\d+$') {
-				$defaultMtValue = [int]$data.default_mt
-				if ($defaultMtValue -ge 1 -and $defaultMtValue -le 128) {
-					$config.default_mt = $defaultMtValue
-				}
-			}
-
 			if ($data.mt_rules) {
+				$hasSsdHddAny = $false
+				$hasLanAny = $false
+				$hasUsbAny = $false
 				foreach ($ruleName in @(
 					"ssd_to_ssd",
-					"ssd_to_hdd",
-					"hdd_to_ssd",
+					"ssd_hdd_any",
 					"hdd_to_hdd_diff_volume",
 					"hdd_to_hdd_same_volume",
-					"network_any",
+					"lan_any",
+					"usb_any",
 					"unknown_local"
 				)) {
 					$ruleValue = $data.mt_rules.$ruleName
@@ -712,6 +711,44 @@ function Get-TuneConfig {
 						$mtRule = [int]$ruleValue
 						if ($mtRule -ge 1 -and $mtRule -le 128) {
 							$config.mt_rules[$ruleName] = $mtRule
+							if ($ruleName -eq "ssd_hdd_any") { $hasSsdHddAny = $true }
+							elseif ($ruleName -eq "lan_any") { $hasLanAny = $true }
+							elseif ($ruleName -eq "usb_any") { $hasUsbAny = $true }
+						}
+					}
+				}
+
+				if (-not $hasSsdHddAny) {
+					$legacySsdToHdd = $data.mt_rules.ssd_to_hdd
+					$legacyHddToSsd = $data.mt_rules.hdd_to_ssd
+					$legacyMixed = $null
+					if ($null -ne $legacySsdToHdd -and "$legacySsdToHdd" -match '^\d+$') {
+						$legacyMixed = [int]$legacySsdToHdd
+					}
+					elseif ($null -ne $legacyHddToSsd -and "$legacyHddToSsd" -match '^\d+$') {
+						$legacyMixed = [int]$legacyHddToSsd
+					}
+					if ($null -ne $legacyMixed -and $legacyMixed -ge 1 -and $legacyMixed -le 128) {
+						$config.mt_rules.ssd_hdd_any = $legacyMixed
+					}
+				}
+
+				if (-not $hasLanAny) {
+					$legacyNetworkAny = $data.mt_rules.network_any
+					if ($null -ne $legacyNetworkAny -and "$legacyNetworkAny" -match '^\d+$') {
+						$legacyLan = [int]$legacyNetworkAny
+						if ($legacyLan -ge 1 -and $legacyLan -le 128) {
+							$config.mt_rules.lan_any = $legacyLan
+						}
+					}
+				}
+
+				if (-not $hasUsbAny) {
+					$legacyUnknown = $data.mt_rules.unknown_local
+					if ($null -ne $legacyUnknown -and "$legacyUnknown" -match '^\d+$') {
+						$legacyUsb = [int]$legacyUnknown
+						if ($legacyUsb -ge 1 -and $legacyUsb -le 128) {
+							$config.mt_rules.usb_any = $legacyUsb
 						}
 					}
 				}
@@ -822,33 +859,25 @@ function Get-ThreadDecision {
 		}
 	}
 
-	if ($script:RoboTuneConfig.default_mt) {
-		return [pscustomobject]@{
-			ThreadCount = [int]$script:RoboTuneConfig.default_mt
-			Reason      = "RoboTune default_mt"
-			SourceMedia = $sourceMedia
-			DestMedia   = $destMedia
-			SourceDisk  = $sourceDisk
-			DestDisk    = $destDisk
-		}
-	}
-
 	# Media-based rules (configurable via RoboTune mt_rules).
-	if ($sourceMedia -eq "NETWORK" -or $destMedia -eq "NETWORK") {
-		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "network_any" -FallbackValue 8
-		$reason = "RoboTune mt_rules: network_any"
+	if ($sourceMedia -eq "LAN" -or $destMedia -eq "LAN") {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "lan_any" -FallbackValue 8
+		$reason = "RoboTune mt_rules: lan_any"
+	}
+	elseif ($sourceMedia -eq "USB" -or $destMedia -eq "USB") {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "usb_any" -FallbackValue 8
+		$reason = "RoboTune mt_rules: usb_any"
 	}
 	elseif ($sourceMedia -eq "SSD" -and $destMedia -eq "SSD") {
 		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "ssd_to_ssd" -FallbackValue 32
 		$reason = "RoboTune mt_rules: ssd_to_ssd"
 	}
-	elseif ($sourceMedia -eq "SSD" -and $destMedia -eq "HDD") {
-		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "ssd_to_hdd" -FallbackValue 8
-		$reason = "RoboTune mt_rules: ssd_to_hdd"
-	}
-	elseif ($sourceMedia -eq "HDD" -and $destMedia -eq "SSD") {
-		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "hdd_to_ssd" -FallbackValue 8
-		$reason = "RoboTune mt_rules: hdd_to_ssd"
+	elseif (
+		($sourceMedia -eq "SSD" -and $destMedia -eq "HDD") -or
+		($sourceMedia -eq "HDD" -and $destMedia -eq "SSD")
+	) {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "ssd_hdd_any" -FallbackValue 8
+		$reason = "RoboTune mt_rules: ssd_hdd_any"
 	}
 	elseif ($sourceMedia -eq "HDD" -and $destMedia -eq "HDD") {
 		if ($samePhysicalDisk -or $sameDriveLetter) {
@@ -869,7 +898,7 @@ function Get-ThreadDecision {
 		$reason = "RoboTune mt_rules: unknown_local (same drive letter)"
 	}
 	else {
-		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 16
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 8
 		$reason = "RoboTune mt_rules: unknown_local"
 	}
 
