@@ -705,6 +705,14 @@ try {
     if ($selectedPaths.Count -eq 0) {
         $selectedPaths = @($anchorResolved)
     }
+    elseif ($selectedPaths.Count -eq 1 -and -not (Test-IsSelectAllToken -PathValue $selectedPaths[0])) {
+        $singleSelectedResolved = Resolve-NormalPath -PathValue $selectedPaths[0]
+        if ([string]::IsNullOrWhiteSpace($singleSelectedResolved) -or -not [string]::Equals($singleSelectedResolved, $anchorResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-StageDebugLog ("SingleAnchorGuard | MismatchDetected=True | Anchor='{0}' | Selected='{1}' | Action='UseAnchor'" -f $anchorResolved, $selectedPaths[0])
+            Write-StageLog ("WARN | mode={0} | single-selection mismatch | anchor='{1}' | selected='{2}' | action='use-anchor'" -f $command, $anchorResolved, $selectedPaths[0])
+            $selectedPaths = @($anchorResolved)
+        }
+    }
     $selectionTimer.Stop()
 
     $saveResult = Save-StagedPaths -CommandName $command -Paths $selectedPaths -AnchorParentPath $parentPath -Backend $script:StageBackend

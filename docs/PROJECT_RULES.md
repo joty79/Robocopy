@@ -9,6 +9,18 @@
 
 ## Critical Decisions
 
+### 2026-02-15 - Single-item stage source must equal context anchor
+- Problem:
+  - Σε single-item Cut/Copy μπορούσε να staged path να αποκλίνει από το clicked item (`%1` anchor), οδηγώντας σε λάθος source στο paste.
+- Root cause:
+  - Το COM selection fallback μπορούσε να επιστρέψει 1 path που δεν ταίριαζε με το anchor.
+- Guardrail / Rule:
+  - Για single-item stage (non-token), αν selected path != anchor, γίνεται hard override στο anchor και γράφεται warning/debug marker.
+- Files affected:
+  - `rcopySingle.ps1`
+- Validation/tests run:
+  - Parse validation `rcopySingle.ps1` μέσω parser check.
+
 ### 2026-02-13 - Stage bottleneck optimization (large multi-selection)
 - Problem:
   - Μεγάλο stage latency σε 1000+ items πριν ξεκινήσει το paste/robocopy.
@@ -493,6 +505,83 @@
     - `Elapsed: ... | Operations: ...`
     - `Phase timing: Resolve | Prep | Execute | Total`
   - With `benchmark=true`, keep full benchmark block and include same phase timing line.
+- Files affected:
+  - `rcp.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-15 - Temp single-file benchmark context menu (single-file copy/paste)
+- Problem:
+  - Χρειαζόταν isolated benchmark flow για να συγκριθεί η απόδοση του strict `single-file` path πριν ενσωματωθεί fast path στο main runtime.
+- Root cause:
+  - Το universal engine κάνει extra orchestration που δεν είναι πάντα απαραίτητο για 1 file benchmark scenarios.
+- Guardrail / Rule:
+  - Added temp benchmark stack with dedicated scripts/keys:
+    - stage only one file path (`benchmarks/single-file-context/FileBench_CopyStage.ps1`)
+    - paste file-to-folder via direct `robocopy` call (`benchmarks/single-file-context/FileBench_Paste.ps1`)
+    - wrappers (`benchmarks/single-file-context/FileBench_CopySilent.vbs`, `benchmarks/single-file-context/FileBench_Paste.vbs`)
+    - separate reg integration (`benchmarks/single-file-context/RoboCopy_SingleFile_Benchmark.reg`)
+  - Uses separate context-menu key names (`Y_32_*`, `Y_33_*`) to avoid collisions with normal Robo-Copy/Robo-Paste entries and folder benchmark temp keys.
+- Files affected:
+  - `benchmarks/single-file-context/FileBench_CopyStage.ps1`
+  - `benchmarks/single-file-context/FileBench_Paste.ps1`
+  - `benchmarks/single-file-context/FileBench_CopySilent.vbs`
+  - `benchmarks/single-file-context/FileBench_Paste.vbs`
+  - `benchmarks/single-file-context/RoboCopy_SingleFile_Benchmark.reg`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation for new PowerShell scripts via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-15 - RoboTune usability: decouple hold window from benchmark mode
+- Problem:
+  - Όταν `benchmark_mode` γινόταν OFF, το window συχνά έκλεινε στο τέλος και δυσκόλευε manual timing checks.
+- Root cause:
+  - Το RoboTune benchmark toggle άλλαζε αυτόματα και το `hold_window`, οπότε δεν υπήρχε ανεξάρτητος έλεγχος.
+- Guardrail / Rule:
+  - `benchmark_mode` toggle controls benchmark output only.
+  - Added dedicated menu toggle for `hold_window`.
+  - Users can keep window open without forcing benchmark mode.
+- Files affected:
+  - `RoboTune.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `RoboTune.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-15 - Main runtime fast path for same-volume cut (native move)
+- Problem:
+  - Main runtime είχε fixed orchestration tax σε cut flows, ειδικά ορατό σε single-item and same-volume scenarios.
+- Root cause:
+  - Move operations περνούσαν πάντα από robocopy copy+delete semantics, ακόμα και όταν source/destination ήταν στο ίδιο volume και χωρίς conflicts.
+- Guardrail / Rule:
+  - Added safe native move fast path (`Move-Item`) for `cut` only, with fallback to robocopy on any failure.
+  - Enabled only when all conditions hold:
+    - `IsMove = true`
+    - `MergeMode = false`
+    - same-volume source/destination
+    - no destination conflict for target item(s)
+  - Applied to:
+    - single directory transfer
+    - single file transfer
+    - grouped file-batch transfer from same source directory
+  - Keeps existing safety/protected path checks untouched.
+- Files affected:
+  - `rcp.ps1`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `rcp.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-15 - Critical safety guard for folder move target semantics
+- Problem:
+  - Move-to-folder icon scenarios could be unsafe/ambiguous, with risk of destructive outcomes when destination semantics were interpreted incorrectly or when destination was inside source.
+- Root cause:
+  - Native move fast path used container destination semantics and previously allowed fallback behavior for `destination inside source` cases.
+- Guardrail / Rule:
+  - Added hard block for move operations when destination path is inside source path (`DestinationInsideSource`), no robocopy fallback.
+  - Native move fast path now uses explicit final destination path:
+    - directory: `Move-Item Source -> PasteTarget\ItemName`
+    - file: `Move-Item Source -> PasteTarget\FileName`
+  - This removes ambiguity for folder-icon paste behavior and prevents self-nesting destructive patterns.
 - Files affected:
   - `rcp.ps1`
   - `docs/PROJECT_RULES.md`
