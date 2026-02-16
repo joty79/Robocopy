@@ -9,6 +9,69 @@
 
 ## Critical Decisions
 
+### 2026-02-16 - Desktop multi-select hardening (`%*` contract + dynamic silent-wrapper root)
+- Problem:
+  - Desktop multi-select μπορούσε να stage-άρει subset items και σε ορισμένες εγκαταστάσεις να οδηγεί σε `Item to be copied does not exist!`.
+- Root cause:
+  - Copy/Cut command contract περνούσε `%1` (single anchor) αντί full selection.
+  - `RoboCopy_Silent.vbs` μπορούσε να δείχνει σε διαφορετικό `SCRIPT_ROOT` από το installed paste runtime, οπότε stage/paste διάβαζαν άλλο state.
+- Guardrail / Rule:
+  - Copy/Cut registry commands χρησιμοποιούν `%*`.
+  - `RoboCopy_Silent.vbs` κάνει dynamic resolve του `SCRIPT_ROOT` από το path του ίδιου του `.vbs`.
+  - `rcopySingle.ps1` δέχεται remaining args (`ValueFromRemainingArguments`) και προτιμά explicit selection args όταν υπάρχουν.
+- Files affected:
+  - `RoboCopy_Silent.vbs`
+  - `rcopySingle.ps1`
+  - `Install.ps1`
+  - `RoboCopy_StandAlone.reg`
+- Validation/tests run:
+  - Parser validation σε `rcopySingle.ps1` και `Install.ps1`.
+  - `cscript //nologo RoboCopy_Silent.vbs` syntax check.
+
+### 2026-02-16 - MT rules UX update (6 visible combos + always-on status line)
+- Problem:
+  - Χρειαζόταν πιο απλό MT tuning model στο RoboTune (χωρίς διπλό `SSD->HDD` / `HDD->SSD`) και μόνιμη ορατότητα των MT rules στο main menu.
+- Root cause:
+  - Το προηγούμενο UI είχε περισσότερα rule entries από το πραγματικό usage και δεν έδειχνε τα MT values συνεχώς στο dashboard line.
+- Guardrail / Rule:
+  - RoboTune MT model έγινε 6-combo:
+    - `SSD->SSD`
+    - `SSD<->HDD`
+    - `HDD->HDD diff volume`
+    - `HDD->HDD same volume`
+    - `LAN`
+    - `USB`
+  - Main menu status line δείχνει πάντα όλα τα παραπάνω MT values.
+  - Status rendering: labels σε light gray, values σε green, format `name = value`.
+  - Naming standard στο UI: `HDD -> Diff HDD`, `HDD -> same HDD`.
+  - Runtime διατηρεί backward compatibility με legacy keys:
+    - `ssd_to_hdd` / `hdd_to_ssd` -> `ssd_hdd_any`
+    - `network_any` -> `lan_any`
+  - `unknown_local` κρατήθηκε ως internal safety fallback και κλειδώθηκε σε `8`.
+- Files affected:
+  - `RoboTune.ps1`
+  - `rcp.ps1`
+  - `README.md`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `RoboTune.ps1` και `rcp.ps1` μέσω parser check.
+
+### 2026-02-16 - Remove `default_mt` (MT rules only)
+- Problem:
+  - Το `default_mt` δημιουργούσε διπλό control path μαζί με `mt_rules` και μπέρδευε το tuning behavior.
+- Root cause:
+  - Υπήρχαν ταυτόχρονα global fallback και media-combo rules στο ίδιο runtime.
+- Guardrail / Rule:
+  - Αφαιρέθηκε πλήρως το `default_mt` από `RoboTune.ps1` και `rcp.ps1`.
+  - MT priority πλέον είναι: `RCWM_MT` env override > `mt_rules`.
+- Files affected:
+  - `RoboTune.ps1`
+  - `rcp.ps1`
+  - `README.md`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `RoboTune.ps1` και `rcp.ps1` μέσω parser check.
+
 ### 2026-02-16 - Stage backend locked to `file` (remove toggle risk)
 - Problem:
   - Το `stage_backend` toggle δεν χρησιμοποιούνταν και μπορούσε να γυρίσει κατά λάθος σε `registry`, δημιουργώντας debug/runtime divergence από το tuned path.
@@ -32,7 +95,7 @@
   - Διπλό tuning model (`routes` + `default_mt` + auto rules) έκανε το config πιο δύσκολο στη συντήρηση.
 - Guardrail / Rule:
   - Αφαιρέθηκαν πλήρως τα route overrides από `RoboTune.ps1`, `rcp.ps1`, και docs.
-  - MT tuning πλέον βασίζεται σε: `RCWM_MT` env > `default_mt` > `mt_rules`.
+  - MT tuning πλέον βασίζεται σε: `RCWM_MT` env > `mt_rules`.
 - Files affected:
   - `RoboTune.ps1`
   - `rcp.ps1`
@@ -47,7 +110,7 @@
   - Το auto MT logic ήταν hardcoded και δεν επέτρεπε per-combo tuning.
 - Guardrail / Rule:
   - Προστέθηκε `mt_rules` block στο `RoboTune.json` με validated values `1..128`.
-  - Decision priority πλέον: `RCWM_MT` env > route override > `default_mt` > `mt_rules` media combo.
+  - Decision priority πλέον: `RCWM_MT` env > `mt_rules` media combo.
   - Νέο RoboTune menu action για interactive update των `mt_rules`.
 - Files affected:
   - `rcp.ps1`

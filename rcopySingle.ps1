@@ -2,7 +2,9 @@ param(
     [Parameter(Position = 0)]
     [string]$Mode = "rc",
     [Parameter(Position = 1)]
-    [string]$AnchorPath
+    [string]$AnchorPath,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$AdditionalSelectionPaths
 )
 
 [Console]::InputEncoding = [Text.UTF8Encoding]::UTF8
@@ -20,6 +22,7 @@ $script:LargeSelectionTrustThreshold = 1000
 $script:LargeSelectionStableHits = 2
 $script:SelectAllTokenPrefix = "?WILDCARD?|"
 $script:SelectAllTokenThreshold = 1000
+$script:DesktopAnchorBurstWindowMs = 9000
 $script:StageMutexName = "Global\MoveTo_RoboCopy_Stage"
 $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageFilesDir = Join-Path $script:StageStateDir "staging"
@@ -76,6 +79,40 @@ function Normalize-RawPathValue {
     return (Normalize-ContextPathValue -PathValue $PathValue)
 }
 
+function Get-ExplicitSelectionFromArgs {
+    param(
+        [string]$AnchorResolved,
+        [string[]]$RawPaths
+    )
+
+    if (-not $RawPaths -or $RawPaths.Count -eq 0) {
+        return @()
+    }
+
+    $ordered = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+
+    if (-not [string]::IsNullOrWhiteSpace($AnchorResolved)) {
+        [void]$ordered.Add($AnchorResolved)
+        [void]$seen.Add($AnchorResolved)
+    }
+
+    foreach ($raw in $RawPaths) {
+        $resolved = Resolve-NormalPath -PathValue $raw
+        if (-not $resolved) {
+            continue
+        }
+        if ($seen.Add($resolved)) {
+            [void]$ordered.Add($resolved)
+        }
+    }
+
+    if ($ordered.Count -eq 0) {
+        return @()
+    }
+    return @($ordered.ToArray())
+}
+
 function Test-IsSelectAllToken {
     param([string]$PathValue)
 
@@ -130,10 +167,41 @@ function Ensure-StageStateDirectories {
     catch { }
 }
 
+function Normalize-StageBackend {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $normalized = $Value.Trim().ToLowerInvariant()
+    if ($normalized -in @("file", "registry")) { return $normalized }
+    return $null
+}
+
 function Get-StageBackend {
     param([string]$ConfigPath)
-    # Safety lock: stage backend is fixed to file.
-    return "file"
+
+    $backend = Normalize-StageBackend -Value $script:StageBackendDefault
+    if (-not $backend) { $backend = "file" }
+
+    $envBackend = Normalize-StageBackend -Value $env:RCWM_STAGE_BACKEND
+    if ($envBackend) { return $envBackend }
+
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        return $backend
+    }
+
+    try {
+        $raw = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop
+        if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            $data = $raw | ConvertFrom-Json -ErrorAction Stop
+            $cfgBackend = Normalize-StageBackend -Value ([string]$data.stage_backend)
+            if ($cfgBackend) {
+                return $cfgBackend
+            }
+        }
+    }
+    catch { }
+
+    return $backend
 }
 
 function Get-StageDebugMode {
@@ -200,7 +268,6 @@ function Get-ExplorerSelectionFromParentEnumerated {
     if (-not $parentNormalized) {
         $parentNormalized = $ParentNormalized
     }
-    if (-not $parentNormalized) { return @() }
     $anchorNormalized = Resolve-NormalPath -PathValue $AnchorPath
 
     $fallbackResults = New-Object System.Collections.Generic.List[string]
@@ -212,7 +279,10 @@ function Get-ExplorerSelectionFromParentEnumerated {
 
     try {
         $shell = New-Object -ComObject Shell.Application
-        foreach ($window in @($shell.Windows())) {
+        $allWindows = @($shell.Windows())
+
+        # Pass 1: strict parent matching (normal folders)
+        foreach ($window in $allWindows) {
             $windowsScanned++
             try {
                 if (-not $window) { continue }
@@ -228,10 +298,12 @@ function Get-ExplorerSelectionFromParentEnumerated {
                 if ($windowFolderPath.Equals($ParentPath, [System.StringComparison]::OrdinalIgnoreCase)) {
                     $windowMatchesParent = $true
                 }
-                else {
+                elseif ($parentNormalized -and $windowFolderPath.Equals($parentNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $windowMatchesParent = $true
+                }
+                elseif ($parentNormalized) {
                     $windowFolderNormalized = Resolve-NormalPath -PathValue $windowFolderPath
-                    if (-not $windowFolderNormalized) { continue }
-                    if ($windowFolderNormalized.Equals($parentNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    if ($windowFolderNormalized -and $windowFolderNormalized.Equals($parentNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
                         $windowMatchesParent = $true
                     }
                 }
@@ -239,7 +311,6 @@ function Get-ExplorerSelectionFromParentEnumerated {
 
                 $parentMatches++
                 $scanMs = [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds)
-
                 $current = New-Object System.Collections.Generic.List[string]
                 $anchorHit = $false
                 $folderItemCount = -1
@@ -290,12 +361,171 @@ function Get-ExplorerSelectionFromParentEnumerated {
             }
             catch { }
         }
+
+        # Pass 2: anchor hunt fallback for Desktop / virtual folders
+        if (-not [string]::IsNullOrWhiteSpace($anchorNormalized)) {
+            Write-StageDebugLog "WindowScan | Entering Anchor Hunt Mode"
+            foreach ($window in $allWindows) {
+                try {
+                    if (-not $window) { continue }
+                    $doc = $window.Document
+                    if (-not $doc) { continue }
+
+                    $rawSelectedItems = @($doc.SelectedItems())
+                    if ($rawSelectedItems.Count -eq 0) { continue }
+
+                    $current = New-Object System.Collections.Generic.List[string]
+                    $anchorHit = $false
+                    foreach ($entry in $rawSelectedItems) {
+                        $entryPath = Normalize-RawPathValue -PathValue ([string]$entry.Path)
+                        if (-not $entryPath) { continue }
+                        [void]$current.Add($entryPath)
+                        if ($entryPath.Equals($anchorNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $anchorHit = $true
+                        }
+                    }
+
+                    if ($anchorHit -and $current.Count -gt 0) {
+                        $scanTimer.Stop()
+                        Write-StageDebugLog ("WindowScanSummary | AnchorHuntSuccess | Scanned={0} | SelectedItemsRead={1} | TotalMs={2}" -f $windowsScanned, $totalSelectedItemsRead, [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds))
+                        return [string[]]$current.ToArray()
+                    }
+                }
+                catch { }
+            }
+        }
     }
     catch { }
 
     $scanTimer.Stop()
-    Write-StageDebugLog ("WindowScanSummary | Scanned={0} | ParentMatches={1} | SelectedItemsRead={2} | TotalMs={3} | FallbackCount={4}" -f $windowsScanned, $parentMatches, $totalSelectedItemsRead, [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds), $fallbackCount)
+    Write-StageDebugLog ("WindowScanSummary | Failed | Scanned={0} | ParentMatches={1} | SelectedItemsRead={2} | TotalMs={3} | FallbackCount={4}" -f $windowsScanned, $parentMatches, $totalSelectedItemsRead, [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds), $fallbackCount)
     return [string[]]$fallbackResults.ToArray()
+}
+
+function Get-DesktopNormalizedPaths {
+    $paths = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("CommonDesktopDirectory"))) {
+        $normalized = Resolve-NormalPath -PathValue $candidate
+        if (-not $normalized) { continue }
+        if ($seen.Add($normalized)) {
+            [void]$paths.Add($normalized)
+        }
+    }
+    return @($paths.ToArray())
+}
+
+function Test-IsDesktopParentPath {
+    param([string]$ParentPath)
+
+    $parentNormalized = Resolve-NormalPath -PathValue $ParentPath
+    if (-not $parentNormalized) { return $false }
+
+    foreach ($desktopPath in @(Get-DesktopNormalizedPaths)) {
+        if ([string]::Equals($parentNormalized, $desktopPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-DesktopAnchorBurstCandidatesFromStage {
+    param(
+        [ValidateSet("rc", "mv")]
+        [string]$CommandName,
+        [string]$ParentNormalized
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ParentNormalized)) { return @() }
+    $stagedPath = Get-StagedJsonPath -CommandName $CommandName
+    if (-not (Test-Path -LiteralPath $stagedPath)) { return @() }
+
+    try {
+        $lines = Get-Content -LiteralPath $stagedPath -Encoding UTF8 -ErrorAction Stop
+        if (-not $lines -or $lines.Count -lt 1) { return @() }
+        $header = [string]$lines[0]
+        if ([string]::IsNullOrWhiteSpace($header) -or -not $header.StartsWith("V2|", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return @()
+        }
+
+        $parts = $header.Split('|', 6)
+        if ($parts.Count -lt 6) { return @() }
+        $headerCommand = [string]$parts[1]
+        $headerUtcRaw = [string]$parts[3]
+        $headerParentRaw = [string]$parts[5]
+        if (-not [string]::Equals($headerCommand, $CommandName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return @()
+        }
+
+        $headerParent = Resolve-NormalPath -PathValue $headerParentRaw
+        if (-not $headerParent -or -not [string]::Equals($headerParent, $ParentNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return @()
+        }
+
+        $headerUtc = $null
+        try { $headerUtc = [DateTime]::Parse($headerUtcRaw).ToUniversalTime() } catch { $headerUtc = $null }
+        if (-not $headerUtc) { return @() }
+
+        $ageMs = ([DateTime]::UtcNow - $headerUtc).TotalMilliseconds
+        if ($ageMs -lt 0 -or $ageMs -gt $script:DesktopAnchorBurstWindowMs) {
+            return @()
+        }
+
+        $existing = New-Object System.Collections.Generic.List[string]
+        for ($idx = 1; $idx -lt $lines.Count; $idx++) {
+            $value = Normalize-RawPathValue -PathValue ([string]$lines[$idx])
+            if (-not $value) { continue }
+            if (Test-IsSelectAllToken -PathValue $value) { continue }
+            [void]$existing.Add($value)
+        }
+        return @(Get-UniqueRawPaths -Candidates ([string[]]$existing.ToArray()))
+    }
+    catch {
+        return @()
+    }
+}
+
+function Merge-DesktopAnchorBurstSelection {
+    param(
+        [ValidateSet("rc", "mv")]
+        [string]$CommandName,
+        [string]$ParentPath,
+        [string[]]$CurrentPaths,
+        [string]$AnchorPath
+    )
+
+    $uniqueCurrent = @(Get-UniqueRawPaths -Candidates $CurrentPaths)
+    if ($uniqueCurrent.Count -gt 1) {
+        return @($uniqueCurrent)
+    }
+    if ($uniqueCurrent.Count -ne 1) {
+        return @($uniqueCurrent)
+    }
+    if (Test-IsSelectAllToken -PathValue $uniqueCurrent[0]) {
+        return @($uniqueCurrent)
+    }
+    if (-not (Test-IsDesktopParentPath -ParentPath $ParentPath)) {
+        return @($uniqueCurrent)
+    }
+
+    $anchorNormalized = Resolve-NormalPath -PathValue $AnchorPath
+    if (-not $anchorNormalized) { $anchorNormalized = $uniqueCurrent[0] }
+    if (-not [string]::Equals($uniqueCurrent[0], $anchorNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @($uniqueCurrent)
+    }
+
+    $parentNormalized = Resolve-NormalPath -PathValue $ParentPath
+    if (-not $parentNormalized) { return @($uniqueCurrent) }
+
+    $candidates = @(Get-DesktopAnchorBurstCandidatesFromStage -CommandName $CommandName -ParentNormalized $parentNormalized)
+    $merged = @(Get-UniqueRawPaths -Candidates ([string[]](@($candidates) + @($anchorNormalized))))
+
+    if ($merged.Count -gt 1) {
+        Write-StageLog ("INFO | mode={0} | desktop-anchor-burst merge | parent='{1}' | current=1 | prevCandidates={2} | merged={3} | windowMs={4}" -f $CommandName, $parentNormalized, $candidates.Count, $merged.Count, $script:DesktopAnchorBurstWindowMs)
+        return @($merged)
+    }
+
+    return @($uniqueCurrent)
 }
 
 function Get-ExplorerSelectionFromParent {
@@ -668,19 +898,28 @@ try {
         exit 1
     }
 
-    $parentPath = Get-AnchorParentPath -PathValue $anchorResolved
     $selectionTimer = [System.Diagnostics.Stopwatch]::StartNew()
-    $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath -AnchorPath $anchorResolved)
-    if ($selectedPaths.Count -eq 0) {
-        $selectedPaths = @($anchorResolved)
+    $parentPath = Get-AnchorParentPath -PathValue $anchorResolved
+    $selectedPaths = @(Get-ExplicitSelectionFromArgs -AnchorResolved $anchorResolved -RawPaths $AdditionalSelectionPaths)
+
+    if ($selectedPaths.Count -gt 1) {
+        Write-StageLog ("INFO | mode={0} | explicit-selection args used | count={1}" -f $command, $selectedPaths.Count)
     }
-    elseif ($selectedPaths.Count -eq 1 -and -not (Test-IsSelectAllToken -PathValue $selectedPaths[0])) {
-        $singleSelectedResolved = Resolve-NormalPath -PathValue $selectedPaths[0]
-        if ([string]::IsNullOrWhiteSpace($singleSelectedResolved) -or -not [string]::Equals($singleSelectedResolved, $anchorResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Write-StageDebugLog ("SingleAnchorGuard | MismatchDetected=True | Anchor='{0}' | Selected='{1}' | Action='UseAnchor'" -f $anchorResolved, $selectedPaths[0])
-            Write-StageLog ("WARN | mode={0} | single-selection mismatch | anchor='{1}' | selected='{2}' | action='use-anchor'" -f $command, $anchorResolved, $selectedPaths[0])
+    else {
+        $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath -AnchorPath $anchorResolved)
+        if ($selectedPaths.Count -eq 0) {
             $selectedPaths = @($anchorResolved)
         }
+        elseif ($selectedPaths.Count -eq 1 -and -not (Test-IsSelectAllToken -PathValue $selectedPaths[0])) {
+            $singleSelectedResolved = Resolve-NormalPath -PathValue $selectedPaths[0]
+            if ([string]::IsNullOrWhiteSpace($singleSelectedResolved) -or -not [string]::Equals($singleSelectedResolved, $anchorResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Write-StageDebugLog ("SingleAnchorGuard | MismatchDetected=True | Anchor='{0}' | Selected='{1}' | Action='UseAnchor'" -f $anchorResolved, $selectedPaths[0])
+                Write-StageLog ("WARN | mode={0} | single-selection mismatch | anchor='{1}' | selected='{2}' | action='use-anchor'" -f $command, $anchorResolved, $selectedPaths[0])
+                $selectedPaths = @($anchorResolved)
+            }
+        }
+
+        $selectedPaths = @(Merge-DesktopAnchorBurstSelection -CommandName $command -ParentPath $parentPath -CurrentPaths $selectedPaths -AnchorPath $anchorResolved)
     }
     $selectionTimer.Stop()
 

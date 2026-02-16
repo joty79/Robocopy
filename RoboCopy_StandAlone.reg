@@ -40,7 +40,7 @@ Windows Registry Editor Version 5.00
 "SeparatorBefore"=""
 
 [HKEY_CURRENT_USER\Software\Classes\*\shell\Y_10_RoboCut\command]
-@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv \"%1\""
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv %*"
 
 [HKEY_CURRENT_USER\Software\Classes\*\shell\Y_11_RoboCopy]
 "MUIVerb"="Robo-Copy"
@@ -50,7 +50,7 @@ Windows Registry Editor Version 5.00
 "SeparatorAfter"=""
 
 [HKEY_CURRENT_USER\Software\Classes\*\shell\Y_11_RoboCopy\command]
-@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" \"%1\""
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" %*"
 
 ; -------- FOLDER CONTEXT (Directory) --------
 ; Folders: Cut + Copy + Paste grouped together
@@ -63,7 +63,7 @@ Windows Registry Editor Version 5.00
 "SeparatorBefore"=""
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_10_RoboCut\command]
-@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv \"%1\""
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" mv %*"
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_11_RoboCopy]
 "MUIVerb"="Robo-Copy"
@@ -72,7 +72,7 @@ Windows Registry Editor Version 5.00
 "Icon"="d:\\Users\\joty79\\Documents\\Icons\\Copy.ico"
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_11_RoboCopy\command]
-@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" \"%1\""
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\RoboCopy_Silent.vbs\" %*"
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_12_RoboPaste]
 "MUIVerb"="Robo-Paste"

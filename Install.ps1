@@ -488,8 +488,8 @@ function Write-RoboRegistry {
     $silentWrapper = Join-Path $InstallRoot 'RoboCopy_Silent.vbs'
     $pasteWrapper = Join-Path $InstallRoot 'RoboPaste_Admin.vbs'
 
-    $cmdCut = "wscript.exe `"$silentWrapper`" mv `"%1`""
-    $cmdCopy = "wscript.exe `"$silentWrapper`" `"%1`""
+    $cmdCut = "wscript.exe `"$silentWrapper`" mv %*"
+    $cmdCopy = "wscript.exe `"$silentWrapper`" %*"
     $cmdPasteFolder = "wscript.exe `"$pasteWrapper`" `"%1`""
     $cmdPasteBackground = "wscript.exe `"$pasteWrapper`" `"%V.`""
 
@@ -545,8 +545,8 @@ function Verify-RoboRegistry {
     param([Parameter(Mandatory)][string]$InstallRoot)
     $silentWrapper = Join-Path $InstallRoot 'RoboCopy_Silent.vbs'
     $pasteWrapper = Join-Path $InstallRoot 'RoboPaste_Admin.vbs'
-    $cmdCut = "wscript.exe `"$silentWrapper`" mv `"%1`""
-    $cmdCopy = "wscript.exe `"$silentWrapper`" `"%1`""
+    $cmdCut = "wscript.exe `"$silentWrapper`" mv %*"
+    $cmdCopy = "wscript.exe `"$silentWrapper`" %*"
     $cmdPasteFolder = "wscript.exe `"$pasteWrapper`" `"%1`""
     $cmdPasteBackground = "wscript.exe `"$pasteWrapper`" `"%V.`""
 

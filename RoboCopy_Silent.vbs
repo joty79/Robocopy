@@ -1,11 +1,11 @@
 ' Silent wrapper for rcopySingle.ps1 (Robo-Copy / Robo-Cut)
-' Location: D:\Users\joty79\scripts\Robocopy
 ' Runs hidden, no profile.
 ' Uses a lightweight lock file to avoid clone storms on Explorer multi-select bursts.
+' SCRIPT_ROOT resolves dynamically from this VBS location.
 
 Option Explicit
 
-Const SCRIPT_ROOT = "D:\Users\joty79\scripts\Robocopy"
+Dim SCRIPT_ROOT
 Const STALE_LOCK_SECONDS = 20
 Const BURST_SUPPRESS_SECONDS = 2
 Const LOCK_RETRY_COUNT = 40
@@ -13,16 +13,17 @@ Const LOCK_RETRY_DELAY_MS = 75
 Const MULTI_STAGE_EXIT_CODE = 10
 
 Dim STATE_DIR, LOCK_FILE
-STATE_DIR = SCRIPT_ROOT & "\state"
-LOCK_FILE = STATE_DIR & "\stage.lock"
-Dim BURST_FILE
-BURST_FILE = STATE_DIR & "\stage.burst"
-
 Dim objShell
 Set objShell = CreateObject("WScript.Shell")
 
 Dim fso
 Set fso = CreateObject("Scripting.FileSystemObject")
+
+SCRIPT_ROOT = fso.GetParentFolderName(WScript.ScriptFullName)
+STATE_DIR = SCRIPT_ROOT & "\state"
+LOCK_FILE = STATE_DIR & "\stage.lock"
+Dim BURST_FILE
+BURST_FILE = STATE_DIR & "\stage.burst"
 
 Sub EnsureStateDir()
     On Error Resume Next
@@ -215,19 +216,22 @@ If WScript.Arguments.Count = 0 Then
     WScript.Quit 0
 End If
 
-Dim mode, anchorPath, command, safeAnchor
+Dim mode, anchorPath, command, safeAnchor, commandArgs, safeArg
 Dim anchorParent, exitCode
+Dim firstSelectionIndex, i
 mode = "rc"
+firstSelectionIndex = 0
 
 If LCase(WScript.Arguments(0)) = "mv" Then
     mode = "mv"
-    If WScript.Arguments.Count < 2 Then
-        WScript.Quit 0
-    End If
-    anchorPath = WScript.Arguments(1)
-Else
-    anchorPath = WScript.Arguments(0)
+    firstSelectionIndex = 1
 End If
+
+If WScript.Arguments.Count <= firstSelectionIndex Then
+    WScript.Quit 0
+End If
+
+anchorPath = WScript.Arguments(firstSelectionIndex)
 
 If Len(anchorPath) = 0 Then
     WScript.Quit 0
@@ -254,8 +258,14 @@ If IsSuppressedBurst(mode, anchorParent) Then
 End If
 
 safeAnchor = Replace(anchorPath, """", """""")
+commandArgs = mode & " """ & safeAnchor & """"
+For i = firstSelectionIndex + 1 To WScript.Arguments.Count - 1
+    safeArg = Replace(WScript.Arguments(i), """", """""")
+    commandArgs = commandArgs & " """ & safeArg & """"
+Next
+
 command = "pwsh.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " & _
-          """" & SCRIPT_ROOT & "\rcopySingle.ps1"" " & mode & " """ & safeAnchor & """"
+          """" & SCRIPT_ROOT & "\rcopySingle.ps1"" " & commandArgs
 
 On Error Resume Next
 exitCode = objShell.Run(command, 0, True)
