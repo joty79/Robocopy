@@ -382,7 +382,12 @@ function Write-StatePair {
         Write-Host " | " -NoNewline -ForegroundColor Gray
     }
     Write-Host ($Name + " = ") -NoNewline -ForegroundColor Gray
-    Write-Host ([string]$Value) -NoNewline -ForegroundColor Green
+    $displayValue = [string]$Value
+    $stateColor = [ConsoleColor]::Green
+    if (($Value -is [bool] -and -not [bool]$Value) -or $displayValue.Equals("False", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $stateColor = [ConsoleColor]::Red
+    }
+    Write-Host $displayValue -NoNewline -ForegroundColor $stateColor
 }
 
 function Write-MtPair {
