@@ -200,7 +200,7 @@ function Get-ExplorerSelectionFromParentEnumerated {
     if (-not $parentNormalized) {
         $parentNormalized = $ParentNormalized
     }
-    if (-not $parentNormalized) { return @() }
+    # Allow null parentNormalized — Pass 2 (Anchor Hunt) handles Desktop/virtual paths
     $anchorNormalized = Resolve-NormalPath -PathValue $AnchorPath
 
     $fallbackResults = New-Object System.Collections.Generic.List[string]
@@ -289,6 +289,72 @@ function Get-ExplorerSelectionFromParentEnumerated {
                 }
             }
             catch { }
+        }
+
+        # Pass 2: Desktop Direct Access via FindWindowSW (SWC_DESKTOP=8)
+        # Shell.Application.Windows() does NOT include the Desktop (Progman.exe).
+        # We use ShellWindows COM CLSID + FindWindowSW to access it directly.
+        # Trigger: no usable selection found (not just parentMatches=0), covers
+        # edge case where Explorer window IS open at Desktop path but selection
+        # is on the wallpaper Desktop (Progman), not in the Explorer window.
+        if ($fallbackCount -le 0 -and -not [string]::IsNullOrWhiteSpace($anchorNormalized)) {
+            Write-StageDebugLog "WindowScan | Entering Desktop Direct Access (FindWindowSW SWC_DESKTOP=8)"
+            try {
+                $desktopShellWindows = [Activator]::CreateInstance(
+                    [Type]::GetTypeFromCLSID([guid]"9BA05972-F6A8-11CF-A442-00A0C90A8F39"))
+                $desktopHwnd = [int]0
+                $desktopBrowser = $desktopShellWindows.FindWindowSW(0, $null, 8, [ref]$desktopHwnd, 1)
+
+                if ($desktopBrowser) {
+                    $desktopDoc = $desktopBrowser.Document
+                    if ($desktopDoc) {
+                        $rawSelectedItems = @($desktopDoc.SelectedItems())
+                        if ($rawSelectedItems.Count -gt 0) {
+                            $current = New-Object System.Collections.Generic.List[string]
+                            $anchorHit = $false
+                            foreach ($entry in $rawSelectedItems) {
+                                $entryPath = Normalize-RawPathValue -PathValue ([string]$entry.Path)
+                                if (-not $entryPath) { continue }
+                                [void]$current.Add($entryPath)
+                                if ($entryPath.Equals($anchorNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                                    $anchorHit = $true
+                                }
+                            }
+
+                            # Safety: anchor must be in selection AND all items share the same parent
+                            if ($anchorHit -and $current.Count -gt 0) {
+                                $anchorParentCheck = Split-Path -Path $anchorNormalized -Parent
+                                $allSameParent = $true
+                                foreach ($p in $current) {
+                                    $itemParent = $null
+                                    try { $itemParent = Split-Path -Path $p -Parent } catch { }
+                                    if (-not $itemParent -or -not $itemParent.Equals($anchorParentCheck, [System.StringComparison]::OrdinalIgnoreCase)) {
+                                        $allSameParent = $false
+                                        break
+                                    }
+                                }
+                                if ($allSameParent) {
+                                    $scanTimer.Stop()
+                                    Write-StageDebugLog ("WindowScanSummary | DesktopDirectSuccess | Count={0} | HWND={1} | TotalMs={2}" -f $current.Count, $desktopHwnd, [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds))
+                                    return [string[]]$current.ToArray()
+                                }
+                                else {
+                                    Write-StageDebugLog ("WindowScan | DesktopDirect | AnchorHit but mixed parents, rejected | Count={0}" -f $current.Count)
+                                }
+                            }
+                            else {
+                                Write-StageDebugLog ("WindowScan | DesktopDirect | AnchorMiss | Count={0} | AnchorHit={1}" -f $current.Count, $anchorHit)
+                            }
+                        }
+                        else {
+                            Write-StageDebugLog "WindowScan | DesktopDirect | No items selected on Desktop"
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-StageDebugLog ("WindowScan | DesktopDirect | ERROR: {0}" -f $_.Exception.Message)
+            }
         }
     }
     catch { }
