@@ -2,7 +2,7 @@ Windows Registry Editor Version 5.00
 
 ; RoboCopy Standalone Script
 ; Location: D:\Users\joty79\scripts\Robocopy
-; Uses PowerShell 7 (pwsh.exe) via Windows Terminal
+; Uses PowerShell 7 (pwsh.exe)
 ; COPY/CUT are SILENT, PASTE runs as ADMIN
 
 ; -------- CLEANUP OLD KEYS --------

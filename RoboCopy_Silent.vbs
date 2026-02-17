@@ -5,7 +5,7 @@
 
 Option Explicit
 
-Const SCRIPT_ROOT = "D:\Users\joty79\scripts\Robocopy"
+Const SCRIPT_ROOT = "C:\Users\joty79\AppData\Local\RoboCopyContext"
 Const STALE_LOCK_SECONDS = 20
 Const BURST_SUPPRESS_SECONDS = 2
 Const LOCK_RETRY_COUNT = 40
@@ -268,3 +268,4 @@ Else
 End If
 ReleaseLock
 On Error GoTo 0
+

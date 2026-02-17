@@ -294,7 +294,7 @@
   - Install/update/uninstall is handled by `Install.ps1`.
   - Per-user install root is `%LOCALAPPDATA%\RoboCopyContext`.
   - Registry writes are dynamic under `HKCU\Software\Classes\...` (cleanup-first + read-back verification).
-  - Missing `wt.exe` must fall back to elevated `pwsh.exe` paste launcher.
+  - (Superseded by 2026-02-17) Runtime now uses elevated `pwsh.exe` paste launcher directly (no `wt.exe` dependency).
   - One-time migration from legacy root copies config/logs but skips `state\staging\*.stage.json`.
 - Files affected:
   - `Install.ps1`
@@ -634,3 +634,21 @@
   - `docs/PROJECT_RULES.md`
 - Validation/tests run:
   - Parse validation `rcp.ps1` via `Parser::ParseFile` (`PARSE_OK`).
+
+### 2026-02-17 - Paste launcher moved to pwsh-only (remove wt dependency)
+- Problem:
+  - Paste launch had extra `wt.exe` dependency and branch logic while user wanted lighter direct launch.
+- Root cause:
+  - `RoboPaste_Admin.vbs` and installer-generated paste wrapper used `wt.exe` first and only then fallback to `pwsh.exe`.
+- Guardrail / Rule:
+  - Always launch elevated `pwsh.exe` directly for `Robo-Paste`.
+  - No runtime dependency on Windows Terminal for paste execution.
+- Files affected:
+  - `RoboPaste_Admin.vbs`
+  - `Install.ps1`
+  - `README.md`
+  - `RoboCopy_StandAlone.reg`
+  - `docs/INSTALLER.md`
+  - `docs/PROJECT_RULES.md`
+- Validation/tests run:
+  - Parse validation `Install.ps1` via `Parser::ParseFile` (`PARSE_OK`).

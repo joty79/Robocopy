@@ -316,18 +316,11 @@ function Invoke-Preflight {
             HasWindowsTerminal = $false
         }
     }
-
-    $hasWt = Test-CommandExists -Name 'wt.exe'
-    if (-not $hasWt) {
-        Write-InstallerLog -Level WARN -Message 'wt.exe not found. Paste wrapper will use elevated pwsh fallback.'
-    }
-    else {
-        Write-InstallerLog -Message 'wt.exe detected.'
-    }
+    Write-InstallerLog -Message 'Using elevated pwsh.exe paste launcher (wt.exe not used).'
 
     return [pscustomobject]@{
         Ok = $true
-        HasWindowsTerminal = $hasWt
+        HasWindowsTerminal = $false
     }
 }
 
@@ -870,27 +863,32 @@ function Write-PasteWrapper {
 
 Option Explicit
 
-Dim shellApp, shellObj
+Dim shellApp
 Set shellApp = CreateObject("Shell.Application")
-Set shellObj = CreateObject("WScript.Shell")
 
 If WScript.Arguments.Count = 0 Then
     WScript.Quit 1
 End If
 
-Dim folderPath, scriptPath, args, wtExit
+Dim folderPath, scriptPath, args
 folderPath = WScript.Arguments(0)
 scriptPath = "$rcpPath"
 
-wtExit = shellObj.Run("cmd /c where wt.exe >nul 2>nul", 0, True)
+folderPath = NormalizePastePathArg(folderPath)
+args = "-NoProfile -ExecutionPolicy Bypass -File """ & scriptPath & """ auto auto """ & folderPath & """"
+shellApp.ShellExecute "pwsh.exe", args, "", "runas", 1
 
-If wtExit = 0 Then
-    args = "new-tab pwsh -NoProfile -ExecutionPolicy Bypass -File """ & scriptPath & """ auto auto """ & folderPath & """"
-    shellApp.ShellExecute "wt.exe", args, "", "runas", 1
-Else
-    args = "-NoProfile -ExecutionPolicy Bypass -File """ & scriptPath & """ auto auto """ & folderPath & """"
-    shellApp.ShellExecute "pwsh.exe", args, "", "runas", 1
-End If
+Function NormalizePastePathArg(pathValue)
+    Dim p
+    p = Trim(CStr(pathValue))
+    If Len(p) = 3 Then
+        If Mid(p, 2, 2) = ":\" Then
+            ' Avoid Windows argv quote edge-case for drive roots like L:\
+            p = p & "."
+        End If
+    End If
+    NormalizePastePathArg = Replace(p, """", """""")
+End Function
 "@
     Set-Content -LiteralPath $WrapperPath -Value $content -Encoding UTF8
 }
