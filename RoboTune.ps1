@@ -365,10 +365,67 @@ function Show-HowToUse {
     Write-Host "   - Writes detailed debug entries to logs\\robocopy_debug.log." -ForegroundColor Gray
     Write-Host "5. Toggle hold_window" -ForegroundColor Gray
     Write-Host "   - Keeps paste window open at end (when benchmark_mode is OFF)." -ForegroundColor Gray
+    Write-Host "6. How to use" -ForegroundColor Gray
+    Write-Host "   - Shows this help screen." -ForegroundColor Gray
+    Write-Host "7. Clear logs" -ForegroundColor Gray
+    Write-Host "   - Truncates run/debug/error/stage logs." -ForegroundColor Gray
     Write-Host ""
     Write-Host "Global: κάθε αλλαγή αποθηκεύεται αυτόματα." -ForegroundColor Green
     Write-Host "Press any key to return..." -ForegroundColor DarkCyan
     [Console]::ReadKey($true) | Out-Null
+}
+
+function Clear-RoboLogs {
+    $candidateLogDirs = @(
+        (Join-Path $PSScriptRoot "logs"),
+        (Join-Path $env:LOCALAPPDATA "RoboCopyContext\logs")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    $logFiles = @(
+        "run_log.txt",
+        "error_log.txt",
+        "stage_log.txt",
+        "robocopy_debug.log"
+    )
+
+    $targets = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in ($candidateLogDirs | Select-Object -Unique)) {
+        foreach ($name in $logFiles) {
+            [void]$targets.Add((Join-Path $dir $name))
+        }
+    }
+
+    $cleared = 0
+    $failed = 0
+    foreach ($path in ($targets | Select-Object -Unique)) {
+        try {
+            $parent = Split-Path -Path $path -Parent
+            if (-not (Test-Path -LiteralPath $parent)) {
+                continue
+            }
+            if (Test-Path -LiteralPath $path) {
+                Clear-Content -LiteralPath $path -Force -ErrorAction Stop
+            }
+            else {
+                Set-Content -LiteralPath $path -Value "" -Encoding UTF8 -Force -ErrorAction Stop
+            }
+            $cleared++
+        }
+        catch {
+            $failed++
+            Write-Host ("Failed to clear: {0}" -f $path) -ForegroundColor Red
+        }
+    }
+
+    if ($cleared -gt 0) {
+        Write-Host ("Logs cleared: {0} file(s)." -f $cleared) -ForegroundColor Green
+    }
+    else {
+        Write-Host "No log files found to clear." -ForegroundColor Yellow
+    }
+    if ($failed -gt 0) {
+        Write-Host ("Errors: {0}" -f $failed) -ForegroundColor Red
+    }
 }
 
 function Write-StatePair {
@@ -503,6 +560,7 @@ while ($true) {
     Write-MenuLine -Number "4" -Prefix "Toggle " -Highlight "debug" -Suffix " mode" -HighlightColor Red
     Write-MenuLine -Number "5" -Prefix "Toggle " -Highlight "hold_window" -Suffix "" -HighlightColor Green
     Write-MenuLine -Number "6" -Prefix "" -Highlight "How to use" -Suffix "" -HighlightColor Cyan
+    Write-MenuLine -Number "7" -Prefix "" -Highlight "Clear logs" -Suffix "" -HighlightColor Yellow
     Write-Host "[Esc] " -NoNewline -ForegroundColor Yellow
     Write-Host "Exit" -ForegroundColor Red
 
@@ -523,6 +581,8 @@ while ($true) {
         "NumPad5" { $choice = "5" }
         "D6" { $choice = "6" }
         "NumPad6" { $choice = "6" }
+        "D7" { $choice = "7" }
+        "NumPad7" { $choice = "7" }
         "Escape" {
             Write-Host "Exit." -ForegroundColor Yellow
             return
@@ -679,6 +739,11 @@ while ($true) {
         }
         "6" {
             Show-HowToUse
+        }
+        "7" {
+            Clear-RoboLogs
+            Write-Host "Press any key to continue..." -ForegroundColor DarkCyan
+            [Console]::ReadKey($true) | Out-Null
         }
         default {
             Write-Host "Invalid option." -ForegroundColor Red
