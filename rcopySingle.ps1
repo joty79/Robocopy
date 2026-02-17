@@ -25,6 +25,8 @@ $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageFilesDir = Join-Path $script:StageStateDir "staging"
 $script:StageBackendDefault = "file"
 $script:StageDebugMode = $false
+$script:DesktopDirectEnterLogged = $false
+$script:DesktopDirectNoSelectionLogged = $false
 
 function Write-StageLog {
     param([string]$Message)
@@ -298,7 +300,10 @@ function Get-ExplorerSelectionFromParentEnumerated {
         # edge case where Explorer window IS open at Desktop path but selection
         # is on the wallpaper Desktop (Progman), not in the Explorer window.
         if ($fallbackCount -le 0 -and -not [string]::IsNullOrWhiteSpace($anchorNormalized)) {
-            Write-StageDebugLog "WindowScan | Entering Desktop Direct Access (FindWindowSW SWC_DESKTOP=8)"
+            if (-not $script:DesktopDirectEnterLogged) {
+                Write-StageDebugLog "WindowScan | Entering Desktop Direct Access (FindWindowSW SWC_DESKTOP=8)"
+                $script:DesktopDirectEnterLogged = $true
+            }
             try {
                 $desktopShellWindows = [Activator]::CreateInstance(
                     [Type]::GetTypeFromCLSID([guid]"9BA05972-F6A8-11CF-A442-00A0C90A8F39"))
@@ -347,7 +352,10 @@ function Get-ExplorerSelectionFromParentEnumerated {
                             }
                         }
                         else {
-                            Write-StageDebugLog "WindowScan | DesktopDirect | No items selected on Desktop"
+                            if (-not $script:DesktopDirectNoSelectionLogged) {
+                                Write-StageDebugLog "WindowScan | DesktopDirect | No items selected on Desktop"
+                                $script:DesktopDirectNoSelectionLogged = $true
+                            }
                         }
                     }
                 }
@@ -654,6 +662,40 @@ function Save-StagedPathsToFile {
     Write-StageDebugLog ("StageWriteSummary | Command={0} | Lines={1} | TempBytes={2} | FinalBytes={3} | AtomicMoveMs={4}" -f $CommandName, $lineCount, $tempBytes, $finalBytes, [int][Math]::Round($moveTimer.Elapsed.TotalMilliseconds))
 }
 
+function Get-ExistingStageHeader {
+    param(
+        [ValidateSet("rc", "mv")][string]$CommandName
+    )
+
+    try {
+        $stagedFile = Get-StagedJsonPath -CommandName $CommandName
+        if (-not (Test-Path -LiteralPath $stagedFile)) { return $null }
+        $reader = $null
+        try {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            $reader = [System.IO.StreamReader]::new($stagedFile, $utf8NoBom)
+            $headerLine = $reader.ReadLine()
+            if ([string]::IsNullOrWhiteSpace($headerLine)) { return $null }
+            if (-not $headerLine.StartsWith("V2|")) { return $null }
+            $parts = $headerLine.Split("|")
+            if ($parts.Count -lt 5) { return $null }
+            $existExpected = 0
+            try { $existExpected = [int]$parts[4] } catch { $existExpected = 0 }
+            $existStageUtc = $null
+            try { $existStageUtc = [DateTime]::Parse($parts[3], $null, [System.Globalization.DateTimeStyles]::RoundtripKind) } catch { }
+            return [pscustomobject]@{
+                ExpectedCount = $existExpected
+                SessionId     = $parts[2]
+                LastStageUtc  = $existStageUtc
+            }
+        }
+        finally {
+            if ($reader) { $reader.Dispose() }
+        }
+    }
+    catch { return $null }
+}
+
 function Save-StagedPaths {
     param(
         [ValidateSet("rc", "mv")]
@@ -738,6 +780,23 @@ try {
     $selectionTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath -AnchorPath $anchorResolved)
     if ($selectedPaths.Count -eq 0) {
+        # Guard: if a valid multi-item stage already exists (recent), do NOT overwrite it.
+        # This prevents late-arriving burst calls (after normal Ctrl+C deselects everything)
+        # from clobbering a good multi-item stage with a single anchor fallback.
+        $existingHeader = Get-ExistingStageHeader -CommandName $command
+        if ($existingHeader -and $existingHeader.ExpectedCount -gt 1) {
+            $stageAgeSec = -1
+            if ($existingHeader.LastStageUtc) {
+                $stageAgeSec = [int][Math]::Round(((Get-Date).ToUniversalTime() - $existingHeader.LastStageUtc).TotalSeconds)
+            }
+            if ($stageAgeSec -ge 0 -and $stageAgeSec -le 5) {
+                $selectionTimer.Stop()
+                $stageTimer.Stop()
+                Write-StageDebugLog ("EmptySelectionGuard | ExistingExpected={0} | ExistingSession={1} | AgeSec={2} | Action='PreserveExisting'" -f $existingHeader.ExpectedCount, $existingHeader.SessionId, $stageAgeSec)
+                Write-StageLog ("SKIP | mode={0} | anchor='{1}' | reason='empty-selection-guard' | existingExpected={2} | ageSec={3}" -f $command, $anchorResolved, $existingHeader.ExpectedCount, $stageAgeSec)
+                exit 0
+            }
+        }
         $selectedPaths = @($anchorResolved)
     }
     elseif ($selectedPaths.Count -eq 1 -and -not (Test-IsSelectAllToken -PathValue $selectedPaths[0])) {
