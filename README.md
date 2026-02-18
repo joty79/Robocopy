@@ -37,7 +37,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
   - Writes diagnostics/telemetry to `logs\stage_log.txt` (`SelectionReadMs`, `DedupeMs`, `PersistFileMs`, `PersistRegistryMs`, `TotalStageMs`).
 - `RoboPaste_Admin.vbs`
   - Elevated launcher for paste.
-  - Opens `wt.exe` as admin and runs `rcp.ps1` with `pwsh -NoProfile`.
+  - Opens elevated `pwsh.exe` and runs `rcp.ps1` with `-NoProfile`.
 - `rcp.ps1`
   - Reads staged files/folders from file staging snapshots and executes `robocopy`.
   - Clears the staging burst marker (`state\stage.burst`) on paste exit paths, so immediate next copy/cut is not suppressed.
@@ -66,7 +66,7 @@ Permanent delete is now handled only by `NuclearDelete\NuclearDeleteFolder.ps1`.
    - `state\staging\mv.stage.json` for move
    - file format is `V2` line payload (`V2|command|session|utc|expected|anchor_parent` + one path per line)
 4. Right-click destination folder (or background) -> `Robo-Paste`.
-5. `RoboPaste_Admin.vbs` starts elevated `wt.exe`, running:
+5. `RoboPaste_Admin.vbs` starts elevated `pwsh.exe`, running:
    - `pwsh -File rcp.ps1 auto auto "<destination>"`
 6. `rcp.ps1` auto-detects active mode (`rc` or `mv`) from staged file snapshots.
 7. For each staged source item:
@@ -118,7 +118,7 @@ If destination folder already exists, script prompts:
 - Windows with `robocopy.exe` (`C:\Windows\System32\robocopy.exe`)
 - PowerShell 7 (`pwsh.exe`)
 - Windows Script Host (`wscript.exe`)
-- Windows Terminal (`wt.exe`) optional (fallback to elevated `pwsh.exe` is supported)
+- `pwsh.exe` is used directly for elevated paste launch (no `wt.exe` dependency)
 - Write access to script `state` folder
 
 ## Logs

@@ -82,7 +82,7 @@ Required:
 - `robocopy.exe`
 
 Optional:
-- `wt.exe` (Windows Terminal). Αν λείπει, το paste wrapper πέφτει σε elevated `pwsh.exe` fallback.
+- none (paste wrapper uses elevated `pwsh.exe` directly).
 
 ## Migration
 

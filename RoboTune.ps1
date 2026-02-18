@@ -369,6 +369,8 @@ function Show-HowToUse {
     Write-Host "   - Shows this help screen." -ForegroundColor Gray
     Write-Host "7. Clear logs" -ForegroundColor Gray
     Write-Host "   - Truncates run/debug/error/stage logs." -ForegroundColor Gray
+    Write-Host "8. Install RoboCopy" -ForegroundColor Gray
+    Write-Host "   - Launches installer menu from local install path." -ForegroundColor Gray
     Write-Host ""
     Write-Host "Global: κάθε αλλαγή αποθηκεύεται αυτόματα." -ForegroundColor Green
     Write-Host "Press any key to return..." -ForegroundColor DarkCyan
@@ -426,6 +428,63 @@ function Clear-RoboLogs {
     if ($failed -gt 0) {
         Write-Host ("Errors: {0}" -f $failed) -ForegroundColor Red
     }
+}
+
+function Launch-RoboCopyInstaller {
+    $installerPath = 'C:\Users\joty79\AppData\Local\RoboCopyContext\Install.ps1'
+    if (-not (Test-Path -LiteralPath $installerPath)) {
+        $installRoot = Split-Path -Path $installerPath -Parent
+        if (-not (Test-Path -LiteralPath $installRoot)) {
+            New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+        }
+
+        Write-Host ("Installer not found: {0}" -f $installerPath) -ForegroundColor Yellow
+        Write-Host "Choose installer source:" -ForegroundColor Cyan
+        Write-Host "[1] GitHub master" -ForegroundColor Gray
+        Write-Host "[2] Local source (D:\Users\joty79\scripts\Robocopy)" -ForegroundColor Gray
+        Write-Host "[0] Cancel" -ForegroundColor Gray
+        $choice = (Read-Host "Select option").Trim()
+
+        switch ($choice) {
+            '1' {
+                $url = 'https://raw.githubusercontent.com/joty79/Robocopy/master/Install.ps1'
+                try {
+                    Invoke-WebRequest -Uri $url -Headers @{ 'User-Agent' = 'RoboTune/1.0' } -UseBasicParsing -OutFile $installerPath
+                    Write-Host "Downloaded Install.ps1 from GitHub master." -ForegroundColor Green
+                }
+                catch {
+                    Write-Host ("Download failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
+                    return
+                }
+            }
+            '2' {
+                $localSource = 'D:\Users\joty79\scripts\Robocopy\Install.ps1'
+                if (-not (Test-Path -LiteralPath $localSource)) {
+                    Write-Host ("Local source not found: {0}" -f $localSource) -ForegroundColor Red
+                    return
+                }
+                try {
+                    Copy-Item -LiteralPath $localSource -Destination $installerPath -Force
+                    Write-Host "Copied Install.ps1 from local source." -ForegroundColor Green
+                }
+                catch {
+                    Write-Host ("Copy failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
+                    return
+                }
+            }
+            default {
+                Write-Host "Cancelled." -ForegroundColor Yellow
+                return
+            }
+        }
+    }
+
+    Start-Process -FilePath 'pwsh.exe' -ArgumentList @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $installerPath
+    )
+    Write-Host "Installer launched." -ForegroundColor Green
 }
 
 function Write-StatePair {
@@ -561,6 +620,7 @@ while ($true) {
     Write-MenuLine -Number "5" -Prefix "Toggle " -Highlight "hold_window" -Suffix "" -HighlightColor Green
     Write-MenuLine -Number "6" -Prefix "" -Highlight "How to use" -Suffix "" -HighlightColor Cyan
     Write-MenuLine -Number "7" -Prefix "" -Highlight "Clear logs" -Suffix "" -HighlightColor Yellow
+    Write-MenuLine -Number "8" -Prefix "" -Highlight "Install RoboCopy" -Suffix "" -HighlightColor Cyan
     Write-Host "[Esc] " -NoNewline -ForegroundColor Yellow
     Write-Host "Exit" -ForegroundColor Red
 
@@ -583,6 +643,8 @@ while ($true) {
         "NumPad6" { $choice = "6" }
         "D7" { $choice = "7" }
         "NumPad7" { $choice = "7" }
+        "D8" { $choice = "8" }
+        "NumPad8" { $choice = "8" }
         "Escape" {
             Write-Host "Exit." -ForegroundColor Yellow
             return
@@ -742,6 +804,11 @@ while ($true) {
         }
         "7" {
             Clear-RoboLogs
+            Write-Host "Press any key to continue..." -ForegroundColor DarkCyan
+            [Console]::ReadKey($true) | Out-Null
+        }
+        "8" {
+            Launch-RoboCopyInstaller
             Write-Host "Press any key to continue..." -ForegroundColor DarkCyan
             [Console]::ReadKey($true) | Out-Null
         }
