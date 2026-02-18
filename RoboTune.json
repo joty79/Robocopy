@@ -1,0 +1,10 @@
+{
+  "benchmark_mode": false,
+  "benchmark": false,
+  "hold_window": false,
+  "debug_mode": true,
+  "stage_backend": "file",
+  "default_mt": 48,
+  "extra_args": [],
+  "routes": []
+}
