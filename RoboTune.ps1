@@ -371,6 +371,8 @@ function Show-HowToUse {
     Write-Host "   - Truncates run/debug/error/stage logs." -ForegroundColor Gray
     Write-Host "8. Install RoboCopy" -ForegroundColor Gray
     Write-Host "   - Launches installer menu from local install path." -ForegroundColor Gray
+    Write-Host "9. Show installation directory" -ForegroundColor Gray
+    Write-Host "   - Opens C:\Users\joty79\AppData\Local\RoboCopyContext." -ForegroundColor Gray
     Write-Host ""
     Write-Host "Global: κάθε αλλαγή αποθηκεύεται αυτόματα." -ForegroundColor Green
     Write-Host "Press any key to return..." -ForegroundColor DarkCyan
@@ -485,6 +487,15 @@ function Launch-RoboCopyInstaller {
         '-File', $installerPath
     )
     Write-Host "Installer launched." -ForegroundColor Green
+}
+
+function Open-RoboCopyInstallDirectory {
+    $installRoot = 'C:\Users\joty79\AppData\Local\RoboCopyContext'
+    if (-not (Test-Path -LiteralPath $installRoot)) {
+        Write-Host ("Install directory not found: {0}" -f $installRoot) -ForegroundColor Yellow
+        return
+    }
+    Start-Process -FilePath 'explorer.exe' -ArgumentList @($installRoot)
 }
 
 function Write-StatePair {
@@ -621,6 +632,7 @@ while ($true) {
     Write-MenuLine -Number "6" -Prefix "" -Highlight "How to use" -Suffix "" -HighlightColor Cyan
     Write-MenuLine -Number "7" -Prefix "" -Highlight "Clear logs" -Suffix "" -HighlightColor Yellow
     Write-MenuLine -Number "8" -Prefix "" -Highlight "Install RoboCopy" -Suffix "" -HighlightColor Cyan
+    Write-MenuLine -Number "9" -Prefix "Show installation " -Highlight "directory" -Suffix "" -HighlightColor Cyan
     Write-Host "[Esc] " -NoNewline -ForegroundColor Yellow
     Write-Host "Exit" -ForegroundColor Red
 
@@ -645,6 +657,8 @@ while ($true) {
         "NumPad7" { $choice = "7" }
         "D8" { $choice = "8" }
         "NumPad8" { $choice = "8" }
+        "D9" { $choice = "9" }
+        "NumPad9" { $choice = "9" }
         "Escape" {
             Write-Host "Exit." -ForegroundColor Yellow
             return
@@ -809,6 +823,11 @@ while ($true) {
         }
         "8" {
             Launch-RoboCopyInstaller
+            Write-Host "Press any key to continue..." -ForegroundColor DarkCyan
+            [Console]::ReadKey($true) | Out-Null
+        }
+        "9" {
+            Open-RoboCopyInstallDirectory
             Write-Host "Press any key to continue..." -ForegroundColor DarkCyan
             [Console]::ReadKey($true) | Out-Null
         }
