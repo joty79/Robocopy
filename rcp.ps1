@@ -176,6 +176,162 @@ function Get-StageWildcardSourceFromToken {
 	return [string]$meta.SourceDirectory
 }
 
+function Remove-KeepRootMarkerFast {
+	param([string]$MarkerPath)
+
+	if ([string]::IsNullOrWhiteSpace($MarkerPath)) { return $true }
+
+	# Keep runtime impact near-zero: immediate try first, then a few tiny retries only on failure.
+	$retryDelaysMs = @(0, 15, 35, 75)
+	foreach ($delayMs in $retryDelaysMs) {
+		if ($delayMs -gt 0) {
+			Start-Sleep -Milliseconds $delayMs
+		}
+
+		try {
+			if (-not [System.IO.File]::Exists($MarkerPath)) {
+				return $true
+			}
+			[System.IO.File]::Delete($MarkerPath)
+			if (-not [System.IO.File]::Exists($MarkerPath)) {
+				return $true
+			}
+		}
+		catch { }
+	}
+
+	return (-not [System.IO.File]::Exists($MarkerPath))
+}
+
+function Try-DeleteFileTinyRetry {
+	param([string]$Path)
+
+	if ([string]::IsNullOrWhiteSpace($Path)) { return $true }
+
+	$retryDelaysMs = @(0, 20, 60, 120)
+	foreach ($delayMs in $retryDelaysMs) {
+		if ($delayMs -gt 0) {
+			Start-Sleep -Milliseconds $delayMs
+		}
+
+		try {
+			if (-not [System.IO.File]::Exists($Path)) {
+				return $true
+			}
+
+			try {
+				[System.IO.File]::SetAttributes($Path, [System.IO.FileAttributes]::Normal)
+			}
+			catch { }
+
+			[System.IO.File]::Delete($Path)
+			if (-not [System.IO.File]::Exists($Path)) {
+				return $true
+			}
+		}
+		catch { }
+	}
+
+	return (-not [System.IO.File]::Exists($Path))
+}
+
+function Resolve-TokenMoveRootLeftovers {
+	param(
+		[string]$SourceDirectory,
+		[string]$DestinationDirectory
+	)
+
+	$stats = [pscustomobject]@{
+		Checked  = 0
+		Eligible = 0
+		Cleaned  = 0
+		Failed   = 0
+		Skipped  = 0
+	}
+
+	if ([string]::IsNullOrWhiteSpace($SourceDirectory) -or [string]::IsNullOrWhiteSpace($DestinationDirectory)) {
+		return $stats
+	}
+	if (-not [System.IO.Directory]::Exists($SourceDirectory)) {
+		return $stats
+	}
+	if (-not [System.IO.Directory]::Exists($DestinationDirectory)) {
+		return $stats
+	}
+
+	$failedSamples = New-Object System.Collections.Generic.List[string]
+	$sourceFiles = @()
+	try {
+		$sourceFiles = @([System.IO.Directory]::EnumerateFiles($SourceDirectory, "*", [System.IO.SearchOption]::TopDirectoryOnly))
+	}
+	catch {
+		return $stats
+	}
+
+	foreach ($sourcePath in $sourceFiles) {
+		$name = [System.IO.Path]::GetFileName($sourcePath)
+		if ([string]::IsNullOrWhiteSpace($name)) {
+			continue
+		}
+
+		if ($name.StartsWith("__rcwm_keep_root_", [System.StringComparison]::OrdinalIgnoreCase) -and
+			$name.EndsWith(".tmp", [System.StringComparison]::OrdinalIgnoreCase)) {
+			continue
+		}
+
+		$stats.Checked++
+		$destinationPath = Join-Path $DestinationDirectory $name
+		if (-not [System.IO.File]::Exists($destinationPath)) {
+			$stats.Skipped++
+			continue
+		}
+
+		$sourceInfo = $null
+		$destinationInfo = $null
+		try {
+			$sourceInfo = Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+			$destinationInfo = Get-Item -LiteralPath $destinationPath -Force -ErrorAction Stop
+		}
+		catch {
+			$stats.Skipped++
+			continue
+		}
+
+		if ($sourceInfo.PSIsContainer -or $destinationInfo.PSIsContainer) {
+			$stats.Skipped++
+			continue
+		}
+
+		$sameLength = ([int64]$sourceInfo.Length -eq [int64]$destinationInfo.Length)
+		$sameWriteUtc = ($sourceInfo.LastWriteTimeUtc -eq $destinationInfo.LastWriteTimeUtc)
+		if (-not ($sameLength -and $sameWriteUtc)) {
+			$stats.Skipped++
+			continue
+		}
+
+		$stats.Eligible++
+		if (Try-DeleteFileTinyRetry -Path $sourcePath) {
+			$stats.Cleaned++
+		}
+		else {
+			$stats.Failed++
+			if ($failedSamples.Count -lt 3) {
+				[void]$failedSamples.Add($sourcePath)
+			}
+		}
+	}
+
+	if ($script:RunSettings.DebugMode) {
+		Write-RunLog ("DEBUG | SelectAll token root-cleanup | Source='{0}' | Dest='{1}' | Checked={2} | Eligible={3} | Cleaned={4} | Failed={5} | Skipped={6}" -f $SourceDirectory, $DestinationDirectory, $stats.Checked, $stats.Eligible, $stats.Cleaned, $stats.Failed, $stats.Skipped)
+	}
+	if ($stats.Failed -gt 0) {
+		$preview = if ($failedSamples.Count -gt 0) { [string]::Join(" | ", $failedSamples.ToArray()) } else { "" }
+		Write-RunLog ("SelectAll token root-cleanup warning | Source='{0}' | Failed={1} | Samples='{2}'" -f $SourceDirectory, $stats.Failed, $preview)
+	}
+
+	return $stats
+}
+
 function Remove-StageBurstMarker {
 	try {
 		if (Test-Path -LiteralPath $script:StageBurstPath) {
@@ -1693,14 +1849,18 @@ function Invoke-StagedPathCollection {
 			$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeTokens -MergeMode:$MergeMode
 		}
 		finally {
-			if ($rootKeepFilePath -and [System.IO.File]::Exists($rootKeepFilePath)) {
-				try {
-					Remove-Item -LiteralPath $rootKeepFilePath -Force -ErrorAction Stop
+			if ($rootKeepFilePath) {
+				$markerRemoved = Remove-KeepRootMarkerFast -MarkerPath $rootKeepFilePath
+				if (-not $markerRemoved) {
+					Write-RunLog ("SelectAll token move guard warning | Marker still exists after retries '{0}'" -f $rootKeepFilePath)
 				}
-				catch {
-					Write-RunLog ("SelectAll token move guard warning | Failed to remove keep-root marker '{0}' | {1}" -f $rootKeepFilePath, $_.Exception.Message)
+				elseif ($script:RunSettings.DebugMode) {
+					Write-RunLog ("DEBUG | SelectAll token move guard cleanup | Marker removed '{0}'" -f $rootKeepFilePath)
 				}
 			}
+		}
+		if ($IsMove -and $tokenResult -and $tokenResult.Succeeded) {
+			[void](Resolve-TokenMoveRootLeftovers -SourceDirectory $sourceDirectory -DestinationDirectory $PasteIntoDirectory)
 		}
 		if ($tokenResult) {
 			$results += $tokenResult
