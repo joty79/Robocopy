@@ -1,0 +1,40 @@
+Windows Registry Editor Version 5.00
+
+; Temp benchmark menu: single-file copy/paste
+; Purpose: measure snappiness for strict single-file workflow.
+; Location: D:\Users\joty79\scripts\Robocopy\benchmarks\single-file-context
+
+; -------- CLEANUP OLD TEMP KEYS --------
+[-HKEY_CURRENT_USER\Software\Classes\*\shell\Y_32_RoboFileCopyBench]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_33_RoboFilePasteBench]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_33_RoboFilePasteBench]
+
+; -------- FILE CONTEXT --------
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Y_32_RoboFileCopyBench]
+"MUIVerb"="Robo-File-Copy (Temp)"
+"NoWorkingDirectory"=""
+"MultiSelectModel"="Single"
+"Icon"="shell32.dll,-16769"
+"SeparatorBefore"=""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Y_32_RoboFileCopyBench\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\benchmarks\\single-file-context\\FileBench_CopySilent.vbs\" \"%1\""
+
+; -------- DIRECTORY CONTEXT --------
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_33_RoboFilePasteBench]
+"MUIVerb"="Robo-File-Paste (Temp)"
+"NoWorkingDirectory"=""
+"Icon"="shell32.dll,-16761"
+"SeparatorAfter"=""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Y_33_RoboFilePasteBench\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\benchmarks\\single-file-context\\FileBench_Paste.vbs\" \"%1\""
+
+; -------- DIRECTORY BACKGROUND CONTEXT --------
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_33_RoboFilePasteBench]
+"MUIVerb"="Robo-File-Paste (Temp)"
+"Icon"="shell32.dll,-16761"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Y_33_RoboFilePasteBench\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\Robocopy\\benchmarks\\single-file-context\\FileBench_Paste.vbs\" \"%V\""
+
