@@ -114,10 +114,14 @@ $robocopyArgs = @(
     $source,
     $target,
     "/E",
-    "/R:1",
-    "/W:1",
     "/MT:48",
-    "/NP"
+    "/NP",
+    "/NJH",
+    "/NJS",
+    "/NC",
+    "/NS",
+    "/NFL",
+    "/NDL"
 )
 
 Write-BenchLog -Line ("PASTE_START | Source='{0}' | Target='{1}'" -f $source, $target)

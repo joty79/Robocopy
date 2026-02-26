@@ -146,6 +146,52 @@ function Confirm-Action {
     $answer -eq 'y'
 }
 
+function Test-IsProcessElevated {
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+        return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-SelfElevatedUninstall {
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($scriptPath) -and $MyInvocation.MyCommand) {
+        $scriptPath = $MyInvocation.MyCommand.Definition
+    }
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        Write-Host 'Cannot resolve script path for elevated uninstall.' -ForegroundColor Red
+        return 3
+    }
+
+    $argList = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', ('"{0}"' -f $scriptPath),
+        '-Action', 'Uninstall',
+        '-InstallPath', ('"{0}"' -f $InstallPath),
+        '-Force'
+    )
+    if ($NoExplorerRestart) {
+        $argList += '-NoExplorerRestart'
+    }
+
+    try {
+        $proc = Start-Process -FilePath 'pwsh.exe' -ArgumentList $argList -Verb RunAs -PassThru -Wait
+        if ($null -ne $proc -and $null -ne $proc.ExitCode) {
+            return [int]$proc.ExitCode
+        }
+        return 0
+    }
+    catch {
+        Write-Host 'Elevation was cancelled or failed.' -ForegroundColor Yellow
+        return 1
+    }
+}
+
 function Get-GitHubBranchNames {
     param([Parameter(Mandatory)][string]$Repo)
 
@@ -285,12 +331,19 @@ function Get-RegistryCleanupPaths {
         'HKCR\Directory\Background\shell\mvpaste',
         'HKCR\Directory\shell\mvdir',
         'HKCR\Directory\shell\rcopy',
+        'HKCR\*\shell\mvdir',
+        'HKCR\*\shell\rcopy',
         'HKCR\AllFilesystemObjects\shell\mvdir',
         'HKCR\AllFilesystemObjects\shell\rcopy',
         'HKCR\Directory\Background\shell\rpaste',
         'HKCR\Directory\shell\rpaste',
         'HKCU\Software\Classes\AllFilesystemObjects\shell\rcopy',
         'HKCU\Software\Classes\AllFilesystemObjects\shell\mvdir',
+        'HKCU\Software\Classes\Directory\shell\rcopy',
+        'HKCU\Software\Classes\Directory\shell\mvdir',
+        'HKCU\Software\Classes\Directory\Background\shell\mvpaste',
+        'HKCU\Software\Classes\*\shell\rcopy',
+        'HKCU\Software\Classes\*\shell\mvdir',
         'HKCU\Software\Classes\Directory\shell\rpaste',
         'HKCU\Software\Classes\Directory\Background\shell\rpaste',
         'HKCR\*\shell\Y_10_RoboCut',
@@ -1299,6 +1352,10 @@ function Invoke-Main {
             if (-not (Confirm-Action -Prompt "Uninstall RoboCopy Context Menu from '$InstallPath'?")) {
                 Write-Host 'Cancelled.' -ForegroundColor Yellow
                 return 0
+            }
+            if (-not (Test-IsProcessElevated)) {
+                Write-Host 'Uninstall requires elevation. Requesting admin approval...' -ForegroundColor Yellow
+                return (Invoke-SelfElevatedUninstall)
             }
             return (Invoke-Uninstall)
         }
